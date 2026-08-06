@@ -1,0 +1,5 @@
+A	apps/api/test/supplier-receipt-sync.test.ts
+M	docs/database/supplier-receipt-sync.md
+M	supabase/functions/_shared/receipt-mapper.test.ts
+M	supabase/functions/_shared/receipt-mapper.ts
+M	supabase/functions/sync-odoo18-supplier-receipts/index.ts

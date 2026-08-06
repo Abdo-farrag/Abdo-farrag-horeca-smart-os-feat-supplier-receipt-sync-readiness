@@ -1,0 +1,51 @@
+run = "npm run dev"
+entrypoint = "apps/web/src/main.tsx"
+modules = ["nodejs-20", "web"]
+
+[[ports]]
+localPort = 3000
+externalPort = 3001
+
+[[ports]]
+localPort = 5173
+externalPort = 80
+
+[env]
+HOST = "0.0.0.0"
+PORT = "3000"
+
+[nix]
+channel = "stable-25_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm run dev"
+waitForPort = 5173
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[userenv]
+
+[userenv.shared]
+OVERVIEW_AUTH_DISABLED = "false"
+OVERVIEW_PASSWORD_HASH = "$2b$10$wt2uVZTIq89S9gZseI6gceKhOE6uIeI32rsxbyP/wQ63rd/3XzXhy"
+
+[deployment]
+deploymentTarget = "cloudrun"

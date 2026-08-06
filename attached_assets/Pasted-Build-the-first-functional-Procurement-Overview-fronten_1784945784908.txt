@@ -1,0 +1,80 @@
+Build the first functional Procurement Overview frontend for Horeca Smart OS.
+
+Current status:
+- Fastify API is running.
+- Supabase migrations are applied.
+- Shared overview-password authentication backend exists.
+- Supabase reviewer/admin authorization exists.
+- The current React frontend only displays a placeholder page.
+- Arabic RTL is required.
+
+Implement:
+
+1. Overview login screen
+- Arabic RTL.
+- Password field only.
+- Submit to the existing overview login API.
+- Use credentials: "include" so the secure session cookie is stored.
+- Show clear Arabic error messages for invalid password and server errors.
+- Never expose or store the password hash in the frontend.
+- Do not use localStorage for authentication.
+
+2. Protected Procurement Overview page
+- Check the existing session endpoint when the app loads.
+- Redirect unauthenticated visitors to the login screen.
+- Add logout using the existing logout endpoint.
+- Keep the session cookie HTTP-only and backend-managed.
+
+3. Overview filters
+- Company:
+  - All companies
+  - MAS, company_id 1
+  - Horeca Smart, company_id 2
+- Coverage days:
+  - 7
+  - 14
+  - 21
+  - 30
+- Default coverage: 14 days.
+- Search by product code or product name.
+
+4. KPI cards
+- Products requiring purchase.
+- Critical products.
+- Total suggested quantity.
+- Products without a supplier.
+- Insufficient-data products.
+- Latest successful synchronization.
+- Show a stale-data warning when appropriate.
+
+5. Product table
+- Product code.
+- Product name.
+- Available quantity.
+- Daily demand.
+- Actual coverage days.
+- Suggested quantity.
+- Priority.
+- Proposed supplier.
+- Supplier review status.
+- Latest receipt date.
+- Pagination.
+
+6. API integration
+- Use the existing Fastify API routes and shared types.
+- Do not connect the browser directly using SUPABASE_SERVICE_ROLE_KEY.
+- All Supabase access must remain in the backend.
+- Use loading, empty, and error states.
+
+7. UI requirements
+- Arabic RTL.
+- Responsive desktop-first layout.
+- Clean operational dashboard.
+- Do not add unnecessary dependencies.
+- Do not deploy or publish.
+- Add tests for login, session protection, logout, filters, loading, empty and error states.
+
+Before coding:
+- Inspect and reuse the existing API route names and response contracts.
+- Do not invent duplicate authentication routes.
+- Report any missing backend endpoint before implementing a workaround.

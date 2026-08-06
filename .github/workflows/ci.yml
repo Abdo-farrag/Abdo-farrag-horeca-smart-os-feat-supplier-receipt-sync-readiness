@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify build outputs
+        run: |
+          test -f apps/api/dist/server.js
+          test -f apps/web/dist/index.html
+
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v2
+        with:
+          version: 2.101.0
+          github-token: ${{ github.token }}
+
+      - name: Start isolated PostgreSQL 17 database
+        run: supabase db start
+
+      - name: Run database tests
+        shell: bash
+        run: |
+          set -o pipefail
+          supabase test db 2>&1 | tee database-test.log
+
+      - name: Upload database test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-test-log
+          path: database-test.log
+          if-no-files-found: error
+
+      - name: Stop isolated database
+        if: always()
+        run: supabase stop --no-backup
+
+  edge-functions:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: supabase/functions
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Deno 2.8.1
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.8.1
+
+      - name: Check formatting
+        run: deno fmt --check .
+
+      - name: Lint Edge Functions
+        shell: bash
+        run: |
+          set -o pipefail
+          deno lint . 2>&1 | tee edge-lint.log
+
+      - name: Upload Edge Function lint log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-lint-log
+          path: supabase/functions/edge-lint.log
+          if-no-files-found: ignore
+
+      - name: Test receipt mapper
+        run: deno test _shared/receipt-mapper.test.ts
+
+      - name: Typecheck supplier receipt sync
+        shell: bash
+        run: |
+          set -o pipefail
+          deno check sync-odoo18-supplier-receipts/index.ts 2>&1 | tee edge-check.log
+
+      - name: Upload Edge Function typecheck log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-check-log
+          path: supabase/functions/edge-check.log
+          if-no-files-found: ignore

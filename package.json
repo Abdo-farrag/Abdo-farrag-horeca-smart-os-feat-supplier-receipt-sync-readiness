@@ -1,0 +1,28 @@
+{
+  "name": "horeca-smart-os",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@10.9.8",
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "npm run build -w @horeca/contracts && npm run build -w @horeca/web && npm run dev -w @horeca/api",
+    "build": "npm run build -w @horeca/contracts && npm run build -w @horeca/web && npm run build -w @horeca/api",
+    "start": "node apps/api/dist/server.js",
+    "test": "npm run test -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "lint": "npm run lint -ws --if-present"
+  },
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "devDependencies": {
+    "@testing-library/user-event": "^14.6.1",
+    "@typescript-eslint/eslint-plugin": "^8.38.0",
+    "@typescript-eslint/parser": "^8.38.0",
+    "concurrently": "^9.2.0",
+    "eslint": "^9.32.0",
+    "tsx": "^4.23.4",
+    "typescript": "^5.8.3"
+  }
+}

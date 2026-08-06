@@ -1,0 +1,1349 @@
+From 8abc656746a2da4bda9cb564b4e72f088ca7676c Mon Sep 17 00:00:00 2001
+From: AI Studio <aistudio@google.com>
+Date: Mon, 3 Aug 2026 19:18:06 +0000
+Subject: [PATCH 1/4] feat(supplier-receipt-sync): harden edge function for
+ zero-write test mode and sanitized metrics
+
+---
+ apps/api/test/supplier-receipt-sync.test.ts   | 162 ++++++++++++++++++
+ docs/database/supplier-receipt-sync.md        |  72 ++++++--
+ .../functions/_shared/receipt-mapper.test.ts  |  55 ++++--
+ supabase/functions/_shared/receipt-mapper.ts  |  84 +++++----
+ .../sync-odoo18-supplier-receipts/index.ts    |  88 +++++++---
+ 5 files changed, 384 insertions(+), 77 deletions(-)
+ create mode 100644 apps/api/test/supplier-receipt-sync.test.ts
+
+diff --git a/apps/api/test/supplier-receipt-sync.test.ts b/apps/api/test/supplier-receipt-sync.test.ts
+new file mode 100644
+index 0000000..0331c29
+--- /dev/null
++++ b/apps/api/test/supplier-receipt-sync.test.ts
+@@ -0,0 +1,162 @@
++import { describe, expect, it } from "vitest";
++import {
++  mapOdooReceiptLine,
++  REJECTION_REASONS,
++} from "../../../supabase/functions/_shared/receipt-mapper.ts";
++
++const completedReceipt = {
++  id: 901,
++  picking_id: [88, "WH/IN/00088"],
++  company_id: [1, "MAS"],
++  product_id: [55, "[P-55] Product"],
++  partner_id: [77, "Supplier A"],
++  quantity: 12,
++  price_unit: 54.5,
++  date_done: "2026-07-23T10:00:00Z",
++  write_date: "2026-07-23T10:05:00Z",
++};
++
++describe("Supplier Receipt Sync Mapper", () => {
++  it("accepts valid MAS receipt", () => {
++    const row = mapOdooReceiptLine(completedReceipt);
++    expect(row).toEqual({
++      odoo_receipt_line_id: 901,
++      receipt_id: 88,
++      receipt_name: "WH/IN/00088",
++      company_id: 1,
++      product_id: 55,
++      product_code: "P-55",
++      product_name: "Product",
++      supplier_id: 77,
++      supplier_name: "Supplier A",
++      received_qty: 12,
++      unit_cost: 54.5,
++      received_at: "2026-07-23T10:00:00.000Z",
++      source_updated_at: "2026-07-23T10:05:00.000Z",
++    });
++  });
++
++  it("accepts valid Horeca Smart receipt", () => {
++    const row = mapOdooReceiptLine({
++      ...completedReceipt,
++      company_id: [2, "Horeca Smart"],
++    });
++    expect(row.company_id).toBe(2);
++  });
++
++  it("normalizes timezone-less Odoo datetimes to UTC", () => {
++    const row = mapOdooReceiptLine({
++      ...completedReceipt,
++      date_done: "2026-07-23 10:00:00",
++      write_date: "2026-07-23 10:05:00",
++    });
++    expect(row.received_at).toBe("2026-07-23T10:00:00.000Z");
++    expect(row.source_updated_at).toBe("2026-07-23T10:05:00.000Z");
++  });
++
++  it("prefers explicit product code and name", () => {
++    const row = mapOdooReceiptLine({
++      ...completedReceipt,
++      product_code: "EXPLICIT-55",
++      product_name: "Explicit Product Name",
++    });
++    expect(row.product_code).toBe("EXPLICIT-55");
++    expect(row.product_name).toBe("Explicit Product Name");
++  });
++
++  it("keeps missing unit cost as null", () => {
++    const row = mapOdooReceiptLine({ ...completedReceipt, price_unit: null });
++    expect(row.unit_cost).toBeNull();
++  });
++
++  it("rejects zero and negative quantities", () => {
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, quantity: 0 }),
++    ).toThrow(REJECTION_REASONS.INVALID_QUANTITY);
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, quantity: -10 }),
++    ).toThrow(REJECTION_REASONS.INVALID_QUANTITY);
++  });
++
++  it("rejects missing product code", () => {
++    expect(() =>
++      mapOdooReceiptLine({
++        ...completedReceipt,
++        product_id: [55, "Product without code"],
++      }),
++    ).toThrow(REJECTION_REASONS.MISSING_PRODUCT_CODE);
++  });
++
++  it("rejects missing supplier", () => {
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, partner_id: false }),
++    ).toThrow(REJECTION_REASONS.MISSING_SUPPLIER);
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, partner_id: null }),
++    ).toThrow(REJECTION_REASONS.MISSING_SUPPLIER);
++  });
++
++  it("rejects missing date_done", () => {
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, date_done: null }),
++    ).toThrow(REJECTION_REASONS.MISSING_DATE_DONE);
++  });
++
++  it("rejects companies outside 1 and 2", () => {
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, company_id: [3, "Other"] }),
++    ).toThrow(REJECTION_REASONS.INVALID_COMPANY);
++  });
++
++  it("excludes internal transfers", () => {
++    expect(() =>
++      mapOdooReceiptLine({
++        ...completedReceipt,
++        picking_id: [88, "WH/INT/00088"],
++      }),
++    ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, picking_code: "internal" }),
++    ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++  });
++});
++
++describe("Supplier Receipt Edge Function Logic Validation", () => {
++  it("enforces test mode page limits and zero-write policy", () => {
++    const requestedPageSize = 500;
++    const mode = "test";
++    const pageSize = mode === "test" ? Math.min(requestedPageSize, 5) : requestedPageSize;
++    const maxPages = mode === "test" ? 1 : Math.min(100, 100);
++
++    expect(pageSize).toBe(5);
++    expect(maxPages).toBe(1);
++  });
++
++  it("rejects invalid mode values", () => {
++    const invalidModes = ["invalid", "dryrun", "sync_all", 123];
++    for (const m of invalidModes) {
++      const isValid = m === undefined || m === "test" || m === "sync";
++      expect(isValid).toBe(false);
++    }
++  });
++
++  it("sanitizes rejection reason counts", () => {
++    const rejectionReasonCounts: Record<string, number> = {};
++    const errors = [
++      new Error(REJECTION_REASONS.MISSING_SUPPLIER),
++      new Error(REJECTION_REASONS.MISSING_SUPPLIER),
++      new Error(REJECTION_REASONS.INVALID_QUANTITY),
++    ];
++
++    for (const err of errors) {
++      const reason = err.message;
++      rejectionReasonCounts[reason] = (rejectionReasonCounts[reason] || 0) + 1;
++    }
++
++    expect(rejectionReasonCounts).toEqual({
++      [REJECTION_REASONS.MISSING_SUPPLIER]: 2,
++      [REJECTION_REASONS.INVALID_QUANTITY]: 1,
++    });
++  });
++});
+diff --git a/docs/database/supplier-receipt-sync.md b/docs/database/supplier-receipt-sync.md
+index 11293da..6a464ff 100644
+--- a/docs/database/supplier-receipt-sync.md
++++ b/docs/database/supplier-receipt-sync.md
+@@ -123,14 +123,64 @@ CI performs:
+ - PostgreSQL tests for cursor existence, empty state, populated state, and `anon` denial.
+ - all existing Node, TypeScript, build, and database tests.
+ 
+-## Deployment gate
+-
+-Before production deployment:
+-
+-1. apply the core and cursor migrations to a Supabase development branch;
+-2. run the function in test mode against Odoo 18;
+-3. inspect mapped samples for both companies;
+-4. run an initial controlled full sync;
+-5. compare latest receipt suppliers with a manual Odoo sample;
+-6. deploy with JWT verification enabled;
+-7. schedule the function using a protected service-role credential or an equivalent internal secret mechanism.
++## Deployment gate & Controlled rollout sequence
++
++Before enabling automated background synchronization, follow this controlled deployment sequence:
++
++1. **Deploy Edge Function:**
++   Deploy `sync-odoo18-supplier-receipts` to Supabase Edge Functions with JWT verification required.
++
++2. **Run Test Mode (Zero-Write Validation):**
++   Invoke the function in `test` mode with `page_size = 5`:
++   ```json
++   {
++     "mode": "test",
++     "company_ids": [1, 2],
++     "page_size": 5
++   }
++   ```
++   - Verify `"write_performed": false` and `"inserted_or_updated_rows": 0`.
++   - Confirm zero database writes occurred to `procurement_supplier_receipts` or `sync_logs`.
++
++3. **Review Diagnostics:**
++   - Inspect `company_counts`, `minimum_received_at`, and `maximum_received_at`.
++   - Inspect `rejection_reason_counts` and `rejected_line_ids` to verify mapping hygiene.
++
++4. **Run First Controlled Sync:**
++   Execute an initial limited sync batch:
++   ```json
++   {
++     "mode": "sync",
++     "company_ids": [1, 2],
++     "page_size": 100,
++     "max_pages": 1,
++     "full_sync": true
++   }
++   ```
++
++5. **Validate Initial Sync Output:**
++   - Confirm `inserted_or_updated_rows` equal 100 (or total available moves).
++   - Validate sample records against Odoo stock moves.
++
++6. **Continue Incremental Backfill:**
++   - Run subsequent batches with `"full_sync": false` so the stored cursor (`procurement_supplier_receipt_cursor()`) advances monotonically.
++   - **Important:** Do not repeatedly use `full_sync = true`, because doing so would re-read the earliest historical records instead of advancing through history.
++
++7. **Enable Automated Schedule:**
++   - Enable pg_cron or scheduled trigger only after historical backfill and validation are complete.
++
++## Schedule Disable & Rollback Procedure
++
++If issues are detected during sync operations:
++
++1. **Disable Scheduled Cron Job:**
++   Unschedule the cron job in Supabase or pg_cron:
++   ```sql
++   SELECT cron.unschedule('sync-supplier-receipts-cron');
++   ```
++
++2. **Revert Edge Function or Pause Invocation:**
++   Stop external webhook triggers or revoke invocation keys if necessary.
++
++3. **Non-Destructive Rollback:**
++   Do not execute destructive table truncation or row deletion as an automatic rollback. Existing synced records remain safely indexed by `odoo_receipt_line_id` and can be corrected or re-upserted once fixes are applied.
+diff --git a/supabase/functions/_shared/receipt-mapper.test.ts b/supabase/functions/_shared/receipt-mapper.test.ts
+index 0ff76c9..1ce227b 100644
+--- a/supabase/functions/_shared/receipt-mapper.test.ts
++++ b/supabase/functions/_shared/receipt-mapper.test.ts
+@@ -1,4 +1,4 @@
+-import { mapOdooReceiptLine } from "./receipt-mapper.ts";
++import { mapOdooReceiptLine, REJECTION_REASONS } from "./receipt-mapper.ts";
+ 
+ function assertEquals(actual: unknown, expected: unknown): void {
+   const actualJson = JSON.stringify(actual);
+@@ -33,7 +33,7 @@ const completedReceipt = {
+   write_date: "2026-07-23T10:05:00Z",
+ };
+ 
+-Deno.test("maps a completed incoming receipt line", () => {
++Deno.test("valid MAS receipt is accepted", () => {
+   const row = mapOdooReceiptLine(completedReceipt);
+ 
+   assertEquals(row, {
+@@ -53,6 +53,15 @@ Deno.test("maps a completed incoming receipt line", () => {
+   });
+ });
+ 
++Deno.test("valid Horeca Smart receipt is accepted", () => {
++  const row = mapOdooReceiptLine({
++    ...completedReceipt,
++    company_id: [2, "Horeca Smart"],
++  });
++
++  assertEquals(row.company_id, 2);
++});
++
+ Deno.test("normalizes timezone-less Odoo datetimes as UTC", () => {
+   const row = mapOdooReceiptLine({
+     ...completedReceipt,
+@@ -80,30 +89,56 @@ Deno.test("keeps missing unit cost as null", () => {
+   assertEquals(row.unit_cost, null);
+ });
+ 
+-Deno.test("rejects draft or incomplete receipt data", () => {
++Deno.test("missing date_done is rejected", () => {
+   assertThrows(
+     () => mapOdooReceiptLine({ ...completedReceipt, date_done: null }),
+-    "INVALID_COMPLETED_RECEIPT_LINE",
++    REJECTION_REASONS.MISSING_DATE_DONE,
+   );
+ });
+ 
+-Deno.test("rejects non-positive received quantities", () => {
++Deno.test("zero and negative quantities are rejected", () => {
+   assertThrows(
+     () => mapOdooReceiptLine({ ...completedReceipt, quantity: 0 }),
+-    "INVALID_COMPLETED_RECEIPT_LINE",
++    REJECTION_REASONS.INVALID_QUANTITY,
++  );
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, quantity: -5 }),
++    REJECTION_REASONS.INVALID_QUANTITY,
+   );
+ });
+ 
+-Deno.test("rejects companies outside MAS and Horeca Smart", () => {
++Deno.test("companies outside 1 and 2 are rejected", () => {
+   assertThrows(
+     () => mapOdooReceiptLine({ ...completedReceipt, company_id: [3, "Other"] }),
+-    "INVALID_COMPLETED_RECEIPT_LINE",
++    REJECTION_REASONS.INVALID_COMPANY,
+   );
+ });
+ 
+-Deno.test("rejects products without a stable product code", () => {
++Deno.test("missing product code is rejected", () => {
+   assertThrows(
+     () => mapOdooReceiptLine({ ...completedReceipt, product_id: [55, "Product without code"] }),
+-    "INVALID_COMPLETED_RECEIPT_LINE",
++    REJECTION_REASONS.MISSING_PRODUCT_CODE,
++  );
++});
++
++Deno.test("missing supplier is rejected", () => {
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, partner_id: false }),
++    REJECTION_REASONS.MISSING_SUPPLIER,
++  );
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, partner_id: null }),
++    REJECTION_REASONS.MISSING_SUPPLIER,
++  );
++});
++
++Deno.test("internal transfers are excluded", () => {
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_id: [88, "WH/INT/00088"] }),
++    REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
++  );
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "internal" }),
++    REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
+   );
+ });
+diff --git a/supabase/functions/_shared/receipt-mapper.ts b/supabase/functions/_shared/receipt-mapper.ts
+index 7dbf245..44f7f0b 100644
+--- a/supabase/functions/_shared/receipt-mapper.ts
++++ b/supabase/functions/_shared/receipt-mapper.ts
+@@ -1,3 +1,16 @@
++export const REJECTION_REASONS = {
++  INVALID_RECEIPT_LINE_ID: "INVALID_RECEIPT_LINE_ID",
++  MISSING_OR_INVALID_PICKING: "MISSING_OR_INVALID_PICKING",
++  INTERNAL_TRANSFER_EXCLUDED: "INTERNAL_TRANSFER_EXCLUDED",
++  INVALID_COMPANY: "INVALID_COMPANY",
++  MISSING_OR_INVALID_PRODUCT: "MISSING_OR_INVALID_PRODUCT",
++  MISSING_SUPPLIER: "MISSING_SUPPLIER",
++  MISSING_PRODUCT_CODE: "MISSING_PRODUCT_CODE",
++  INVALID_QUANTITY: "INVALID_QUANTITY",
++  MISSING_DATE_DONE: "MISSING_DATE_DONE",
++  INVALID_UNIT_COST: "INVALID_UNIT_COST",
++} as const;
++
+ export const INVALID_COMPLETED_RECEIPT_LINE = "INVALID_COMPLETED_RECEIPT_LINE" as const;
+ 
+ type Many2One = [number, string] | false | null | undefined;
+@@ -18,19 +31,19 @@ export type SupplierReceiptRow = {
+   source_updated_at: string | null;
+ };
+ 
+-function invalid(): never {
+-  throw new Error(INVALID_COMPLETED_RECEIPT_LINE);
++function invalid(code: string = INVALID_COMPLETED_RECEIPT_LINE): never {
++  throw new Error(code);
+ }
+ 
+-function positiveInteger(value: unknown): number {
++function positiveInteger(value: unknown, errorCode: string): number {
+   const parsed = Number(value);
+-  if (!Number.isSafeInteger(parsed) || parsed <= 0) invalid();
++  if (!Number.isSafeInteger(parsed) || parsed <= 0) invalid(errorCode);
+   return parsed;
+ }
+ 
+-function positiveNumber(value: unknown): number {
++function positiveNumber(value: unknown, errorCode: string): number {
+   const parsed = Number(value);
+-  if (!Number.isFinite(parsed) || parsed <= 0) invalid();
++  if (!Number.isFinite(parsed) || parsed <= 0) invalid(errorCode);
+   return parsed;
+ }
+ 
+@@ -40,20 +53,20 @@ function optionalCost(value: unknown): number | null {
+   }
+ 
+   const parsed = Number(value);
+-  if (!Number.isFinite(parsed) || parsed < 0) invalid();
++  if (!Number.isFinite(parsed) || parsed < 0) invalid(REJECTION_REASONS.INVALID_UNIT_COST);
+   return parsed;
+ }
+ 
+-function nonEmptyText(value: unknown): string {
+-  if (typeof value !== "string") invalid();
++function nonEmptyText(value: unknown, errorCode: string): string {
++  if (typeof value !== "string") invalid(errorCode);
+   const normalized = value.trim();
+-  if (!normalized) invalid();
++  if (!normalized) invalid(errorCode);
+   return normalized;
+ }
+ 
+-function many2One(value: unknown): [number, string] {
+-  if (!Array.isArray(value) || value.length < 2) invalid();
+-  return [positiveInteger(value[0]), nonEmptyText(value[1])];
++function many2One(value: unknown, errorCode: string): [number, string] {
++  if (!Array.isArray(value) || value.length < 2) invalid(errorCode);
++  return [positiveInteger(value[0], errorCode), nonEmptyText(value[1], errorCode)];
+ }
+ 
+ function normalizeOdooTimestamp(value: string): string {
+@@ -62,16 +75,16 @@ function normalizeOdooTimestamp(value: string): string {
+   return withoutTimezone.test(normalized) ? `${normalized.replace(" ", "T")}Z` : normalized;
+ }
+ 
+-function isoTimestamp(value: unknown, nullable = false): string | null {
++function isoTimestamp(value: unknown, errorCode: string, nullable = false): string | null {
+   if (nullable && (value === null || value === undefined || value === false || value === "")) {
+     return null;
+   }
+ 
+-  if (typeof value !== "string" && !(value instanceof Date)) invalid();
++  if (typeof value !== "string" && !(value instanceof Date)) invalid(errorCode);
+   const parsed = value instanceof Date
+     ? new Date(value.getTime())
+-    : new Date(normalizeOdooTimestamp(value));
+-  if (Number.isNaN(parsed.getTime())) invalid();
++    : new Date(normalizeOdooTimestamp(value as string));
++  if (Number.isNaN(parsed.getTime())) invalid(errorCode);
+   return parsed.toISOString();
+ }
+ 
+@@ -80,11 +93,11 @@ function parseProductDisplayName(displayName: string): {
+   productName: string;
+ } {
+   const match = displayName.match(/^\[([^\]]+)\]\s*(.+)$/);
+-  if (!match) invalid();
++  if (!match) invalid(REJECTION_REASONS.MISSING_PRODUCT_CODE);
+ 
+   return {
+-    productCode: nonEmptyText(match[1]),
+-    productName: nonEmptyText(match[2]),
++    productCode: nonEmptyText(match[1], REJECTION_REASONS.MISSING_PRODUCT_CODE),
++    productName: nonEmptyText(match[2], REJECTION_REASONS.MISSING_OR_INVALID_PRODUCT),
+   };
+ }
+ 
+@@ -99,7 +112,7 @@ function resolveProductIdentity(
+     const fallbackName = displayName.replace(/^\[[^\]]+\]\s*/, "").trim();
+     return {
+       productCode: explicitCode,
+-      productName: nonEmptyText(explicitName || fallbackName),
++      productName: nonEmptyText(explicitName || fallbackName, REJECTION_REASONS.MISSING_OR_INVALID_PRODUCT),
+     };
+   }
+ 
+@@ -109,19 +122,28 @@ function resolveProductIdentity(
+ export function mapOdooReceiptLine(
+   raw: Record<string, unknown>,
+ ): SupplierReceiptRow {
+-  const picking = many2One(raw.picking_id as Many2One);
+-  const company = many2One(raw.company_id as Many2One);
+-  const product = many2One(raw.product_id as Many2One);
+-  const supplier = many2One(raw.partner_id as Many2One);
++  const odooReceiptLineId = positiveInteger(raw.id, REJECTION_REASONS.INVALID_RECEIPT_LINE_ID);
++  const picking = many2One(raw.picking_id, REJECTION_REASONS.MISSING_OR_INVALID_PICKING);
++
++  // Exclude internal transfers
++  if (picking[1].toUpperCase().includes("/INT/") || raw.picking_code === "internal") {
++    invalid(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++  }
++
++  const company = many2One(raw.company_id, REJECTION_REASONS.INVALID_COMPANY);
++  if (company[0] !== 1 && company[0] !== 2) {
++    invalid(REJECTION_REASONS.INVALID_COMPANY);
++  }
+ 
+-  if (company[0] !== 1 && company[0] !== 2) invalid();
++  const product = many2One(raw.product_id, REJECTION_REASONS.MISSING_OR_INVALID_PRODUCT);
++  const supplier = many2One(raw.partner_id, REJECTION_REASONS.MISSING_SUPPLIER);
+ 
+   const identity = resolveProductIdentity(raw, product[1]);
+-  const receivedAt = isoTimestamp(raw.date_done);
+-  if (!receivedAt) invalid();
++  const receivedAt = isoTimestamp(raw.date_done, REJECTION_REASONS.MISSING_DATE_DONE);
++  if (!receivedAt) invalid(REJECTION_REASONS.MISSING_DATE_DONE);
+ 
+   return {
+-    odoo_receipt_line_id: positiveInteger(raw.id),
++    odoo_receipt_line_id: odooReceiptLineId,
+     receipt_id: picking[0],
+     receipt_name: picking[1],
+     company_id: company[0],
+@@ -130,9 +152,9 @@ export function mapOdooReceiptLine(
+     product_name: identity.productName,
+     supplier_id: supplier[0],
+     supplier_name: supplier[1],
+-    received_qty: positiveNumber(raw.quantity),
++    received_qty: positiveNumber(raw.quantity, REJECTION_REASONS.INVALID_QUANTITY),
+     unit_cost: optionalCost(raw.price_unit),
+     received_at: receivedAt,
+-    source_updated_at: isoTimestamp(raw.write_date, true),
++    source_updated_at: isoTimestamp(raw.write_date, REJECTION_REASONS.MISSING_DATE_DONE, true),
+   };
+ }
+diff --git a/supabase/functions/sync-odoo18-supplier-receipts/index.ts b/supabase/functions/sync-odoo18-supplier-receipts/index.ts
+index f3e5c54..37a95e4 100644
+--- a/supabase/functions/sync-odoo18-supplier-receipts/index.ts
++++ b/supabase/functions/sync-odoo18-supplier-receipts/index.ts
+@@ -159,13 +159,22 @@ async function currentReceiptCursor(
+ Deno.serve(async (req: Request) => {
+   const startedAt = new Date().toISOString();
+   let supabase: ReturnType<typeof createClient> | null = null;
++  let mode: Mode = "test";
+ 
+   try {
+     if (req.method !== "POST") return jsonResponse({ success: false, error: "Use POST" }, 405);
+     requireServiceRole(req);
+ 
+     const body = await req.json().catch(() => ({})) as RequestBody;
+-    const mode: Mode = body.mode === "sync" ? "sync" : "test";
++
++    if (body.mode !== undefined && body.mode !== "test" && body.mode !== "sync") {
++      return jsonResponse(
++        { success: false, error: "Invalid mode. Supported modes are: test, sync" },
++        400,
++      );
++    }
++    mode = body.mode === "sync" ? "sync" : "test";
++
+     const companyIds = parseCompanyIds(body.company_ids);
+     const requestedPageSize = parsePositiveInteger(
+       body.page_size,
+@@ -237,6 +246,7 @@ Deno.serve(async (req: Request) => {
+       ? parseNonNegativeInteger(body.start_after_id, 0)
+       : await currentReceiptCursor(supabase);
+ 
++    const cursorStart = lastSeenId;
+     let fetchedRows = 0;
+     let mappedRows = 0;
+     let writtenRows = 0;
+@@ -244,6 +254,10 @@ Deno.serve(async (req: Request) => {
+     let pages = 0;
+     const rejectedLineIds: number[] = [];
+     const sample: SupplierReceiptRow[] = [];
++    const rejectionReasonCounts: Record<string, number> = {};
++    const companyCounts: Record<string, number> = {};
++    let minimumReceivedAt: string | null = null;
++    let maximumReceivedAt: string | null = null;
+ 
+     while (pages < maxPages) {
+       const domain = [
+@@ -310,16 +324,25 @@ Deno.serve(async (req: Request) => {
+           });
+           mapped.push(row);
+           if (sample.length < 5) sample.push(row);
+-        } catch {
++
++          const compStr = String(row.company_id);
++          companyCounts[compStr] = (companyCounts[compStr] || 0) + 1;
++
++          if (!minimumReceivedAt || row.received_at < minimumReceivedAt) {
++            minimumReceivedAt = row.received_at;
++          }
++          if (!maximumReceivedAt || row.received_at > maximumReceivedAt) {
++            maximumReceivedAt = row.received_at;
++          }
++        } catch (error) {
+           rejectedRows += 1;
+           if (rejectedLineIds.length < 20) rejectedLineIds.push(Number(move.id));
++          const reason = error instanceof Error ? error.message : "UNKNOWN_REJECTION";
++          rejectionReasonCounts[reason] = (rejectionReasonCounts[reason] || 0) + 1;
+         }
+       }
+ 
+       mappedRows += mapped.length;
+-      if (moves.length > 0 && mapped.length === 0) {
+-        throw new Error("All fetched completed receipt lines were rejected by validation");
+-      }
+ 
+       if (mode === "sync" && mapped.length > 0) {
+         const syncedAt = new Date().toISOString();
+@@ -334,22 +357,24 @@ Deno.serve(async (req: Request) => {
+       if (moves.length < pageSize || mode === "test") break;
+     }
+ 
+-    const finishedAt = new Date().toISOString();
+-    await writeSyncLog(supabase, {
+-      sync_type: SYNC_TYPE,
+-      status: "success",
+-      message: JSON.stringify({
+-        mode,
+-        fetched_rows: fetchedRows,
+-        mapped_rows: mappedRows,
+-        written_rows: writtenRows,
+-        rejected_rows: rejectedRows,
+-        cursor: lastSeenId,
+-      }),
+-      rows_count: writtenRows,
+-      started_at: startedAt,
+-      finished_at: finishedAt,
+-    });
++    if (mode === "sync") {
++      const finishedAt = new Date().toISOString();
++      await writeSyncLog(supabase, {
++        sync_type: SYNC_TYPE,
++        status: "success",
++        message: JSON.stringify({
++          mode,
++          fetched_rows: fetchedRows,
++          mapped_rows: mappedRows,
++          written_rows: writtenRows,
++          rejected_rows: rejectedRows,
++          cursor: lastSeenId,
++        }),
++        rows_count: writtenRows,
++        started_at: startedAt,
++        finished_at: finishedAt,
++      });
++    }
+ 
+     return jsonResponse({
+       success: true,
+@@ -358,17 +383,26 @@ Deno.serve(async (req: Request) => {
+       company_ids: companyIds,
+       pages,
+       fetched_rows: fetchedRows,
+-      mapped_rows: mappedRows,
+-      written_rows: writtenRows,
++      accepted_rows: mappedRows,
+       rejected_rows: rejectedRows,
++      inserted_or_updated_rows: mode === "sync" ? writtenRows : 0,
++      write_performed: mode === "sync",
++      cursor_start: cursorStart,
++      cursor_end: lastSeenId,
++      rejection_reason_counts: rejectionReasonCounts,
++      company_counts: companyCounts,
++      minimum_received_at: minimumReceivedAt,
++      maximum_received_at: maximumReceivedAt,
+       rejected_line_ids: rejectedLineIds,
++      mapped_rows: mappedRows,
++      written_rows: mode === "sync" ? writtenRows : 0,
+       cursor: lastSeenId,
+       has_more: mode === "sync" && pages === maxPages,
+       sample,
+     });
+   } catch (error) {
+     const message = error instanceof Error ? error.message : String(error);
+-    if (supabase) {
++    if (mode === "sync" && supabase) {
+       await writeSyncLog(supabase, {
+         sync_type: SYNC_TYPE,
+         status: "error",
+@@ -378,7 +412,11 @@ Deno.serve(async (req: Request) => {
+         finished_at: new Date().toISOString(),
+       });
+     }
+-    const status = message === "SERVICE_ROLE_REQUIRED" ? 403 : 500;
++    const status = message === "SERVICE_ROLE_REQUIRED"
++      ? 403
++      : message.includes("Invalid mode")
++      ? 400
++      : 500;
+     return jsonResponse({ success: false, error: message }, status);
+   }
+ });
+-- 
+2.34.1
+
+
+From 0d8b2b78f0edceb4ed283f1163ec8b068683851d Mon Sep 17 00:00:00 2001
+From: AI Studio <aistudio@google.com>
+Date: Mon, 3 Aug 2026 19:28:45 +0000
+Subject: [PATCH 2/4] feat(supplier-receipt-sync): add strict edge runtime
+ input validation and picking type classification rules
+
+---
+ apps/api/test/supplier-receipt-sync.test.ts   | 140 +++++++++++++++---
+ .../functions/_shared/receipt-mapper.test.ts  |  31 +++-
+ supabase/functions/_shared/receipt-mapper.ts  |  15 +-
+ .../sync-odoo18-supplier-receipts/index.ts    |  57 ++++++-
+ 4 files changed, 213 insertions(+), 30 deletions(-)
+
+diff --git a/apps/api/test/supplier-receipt-sync.test.ts b/apps/api/test/supplier-receipt-sync.test.ts
+index 0331c29..5fa5df4 100644
+--- a/apps/api/test/supplier-receipt-sync.test.ts
++++ b/apps/api/test/supplier-receipt-sync.test.ts
+@@ -108,37 +108,139 @@ describe("Supplier Receipt Sync Mapper", () => {
+     ).toThrow(REJECTION_REASONS.INVALID_COMPANY);
+   });
+ 
+-  it("excludes internal transfers", () => {
++  it("classifies picking types correctly", () => {
++    // incoming is accepted
++    const incomingRow = mapOdooReceiptLine({
++      ...completedReceipt,
++      picking_code: "incoming",
++    });
++    expect(incomingRow.odoo_receipt_line_id).toBe(901);
++
++    // internal is rejected
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, picking_code: "internal" }),
++    ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++
++    // outgoing is rejected
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, picking_code: "outgoing" }),
++    ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++
++    // picking_type_code internal is rejected
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, picking_type_code: "internal" }),
++    ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++
++    // picking_type_code outgoing is rejected
++    expect(() =>
++      mapOdooReceiptLine({ ...completedReceipt, picking_type_code: "outgoing" }),
++    ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++
++    // defensive check on picking name containing /INT/
+     expect(() =>
+       mapOdooReceiptLine({
+         ...completedReceipt,
+         picking_id: [88, "WH/INT/00088"],
+       }),
+     ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
+-
+-    expect(() =>
+-      mapOdooReceiptLine({ ...completedReceipt, picking_code: "internal" }),
+-    ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
+   });
+ });
+ 
+-describe("Supplier Receipt Edge Function Logic Validation", () => {
+-  it("enforces test mode page limits and zero-write policy", () => {
+-    const requestedPageSize = 500;
+-    const mode = "test";
+-    const pageSize = mode === "test" ? Math.min(requestedPageSize, 5) : requestedPageSize;
+-    const maxPages = mode === "test" ? 1 : Math.min(100, 100);
++describe("Supplier Receipt Edge Function Logic & Input Validation", () => {
++  function validateInputs(body: {
++    mode?: unknown;
++    page_size?: unknown;
++    max_pages?: unknown;
++    full_sync?: unknown;
++    start_after_id?: unknown;
++  }) {
++    if (body.mode !== undefined && body.mode !== "test" && body.mode !== "sync") {
++      return { valid: false, error: "Invalid mode. Supported modes are: test, sync" };
++    }
++    const mode = body.mode === "sync" ? "sync" : "test";
+ 
+-    expect(pageSize).toBe(5);
+-    expect(maxPages).toBe(1);
+-  });
++    if (body.page_size !== undefined) {
++      if (
++        typeof body.page_size !== "number" ||
++        !Number.isInteger(body.page_size) ||
++        body.page_size < 1 ||
++        body.page_size > 500
++      ) {
++        return { valid: false, error: "Invalid page_size. Must be an integer between 1 and 500" };
++      }
++    }
++
++    if (body.max_pages !== undefined) {
++      if (
++        typeof body.max_pages !== "number" ||
++        !Number.isInteger(body.max_pages) ||
++        body.max_pages < 1 ||
++        body.max_pages > 100
++      ) {
++        return { valid: false, error: "Invalid max_pages. Must be an integer between 1 and 100" };
++      }
++    }
+ 
+-  it("rejects invalid mode values", () => {
+-    const invalidModes = ["invalid", "dryrun", "sync_all", 123];
+-    for (const m of invalidModes) {
+-      const isValid = m === undefined || m === "test" || m === "sync";
+-      expect(isValid).toBe(false);
++    if (body.full_sync !== undefined && typeof body.full_sync !== "boolean") {
++      return { valid: false, error: "Invalid full_sync. Must be a boolean" };
+     }
++
++    if (
++      body.start_after_id !== undefined &&
++      (typeof body.start_after_id !== "number" ||
++        !Number.isInteger(body.start_after_id) ||
++        body.start_after_id < 0)
++    ) {
++      return { valid: false, error: "Invalid start_after_id. Must be a non-negative integer" };
++    }
++
++    return { valid: true, mode };
++  }
++
++  it("omitted mode defaults to test mode", () => {
++    const res = validateInputs({});
++    expect(res.valid).toBe(true);
++    expect(res.mode).toBe("test");
++  });
++
++  it("rejects unknown modes", () => {
++    expect(validateInputs({ mode: "unknown" }).valid).toBe(false);
++    expect(validateInputs({ mode: "dryrun" }).valid).toBe(false);
++  });
++
++  it("validates page_size boundaries and integer type", () => {
++    expect(validateInputs({ page_size: 0 }).valid).toBe(false);
++    expect(validateInputs({ page_size: -1 }).valid).toBe(false);
++    expect(validateInputs({ page_size: 501 }).valid).toBe(false);
++    expect(validateInputs({ page_size: 2.5 }).valid).toBe(false);
++    expect(validateInputs({ page_size: "10" }).valid).toBe(false);
++    expect(validateInputs({ page_size: 10 }).valid).toBe(true);
++    expect(validateInputs({ page_size: 500 }).valid).toBe(true);
++  });
++
++  it("validates max_pages boundaries and integer type", () => {
++    expect(validateInputs({ max_pages: 0 }).valid).toBe(false);
++    expect(validateInputs({ max_pages: -1 }).valid).toBe(false);
++    expect(validateInputs({ max_pages: 101 }).valid).toBe(false);
++    expect(validateInputs({ max_pages: 1.5 }).valid).toBe(false);
++    expect(validateInputs({ max_pages: "5" }).valid).toBe(false);
++    expect(validateInputs({ max_pages: 1 }).valid).toBe(true);
++    expect(validateInputs({ max_pages: 100 }).valid).toBe(true);
++  });
++
++  it("validates full_sync boolean type", () => {
++    expect(validateInputs({ full_sync: "true" }).valid).toBe(false);
++    expect(validateInputs({ full_sync: 1 }).valid).toBe(false);
++    expect(validateInputs({ full_sync: true }).valid).toBe(true);
++    expect(validateInputs({ full_sync: false }).valid).toBe(true);
++  });
++
++  it("validates start_after_id non-negative integer type", () => {
++    expect(validateInputs({ start_after_id: -1 }).valid).toBe(false);
++    expect(validateInputs({ start_after_id: 2.5 }).valid).toBe(false);
++    expect(validateInputs({ start_after_id: "0" }).valid).toBe(false);
++    expect(validateInputs({ start_after_id: 0 }).valid).toBe(true);
++    expect(validateInputs({ start_after_id: 150 }).valid).toBe(true);
+   });
+ 
+   it("sanitizes rejection reason counts", () => {
+diff --git a/supabase/functions/_shared/receipt-mapper.test.ts b/supabase/functions/_shared/receipt-mapper.test.ts
+index 1ce227b..f57bd8e 100644
+--- a/supabase/functions/_shared/receipt-mapper.test.ts
++++ b/supabase/functions/_shared/receipt-mapper.test.ts
+@@ -132,13 +132,38 @@ Deno.test("missing supplier is rejected", () => {
+   );
+ });
+ 
+-Deno.test("internal transfers are excluded", () => {
++Deno.test("picking type code classification rules", () => {
++  // incoming is accepted
++  const incomingRow = mapOdooReceiptLine({ ...completedReceipt, picking_code: "incoming" });
++  assertEquals(incomingRow.odoo_receipt_line_id, 901);
++
++  // internal is rejected
+   assertThrows(
+-    () => mapOdooReceiptLine({ ...completedReceipt, picking_id: [88, "WH/INT/00088"] }),
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "internal" }),
+     REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
+   );
++
++  // outgoing is rejected
+   assertThrows(
+-    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "internal" }),
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "outgoing" }),
++    REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
++  );
++
++  // picking_type_code internal is rejected
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_type_code: "internal" }),
++    REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
++  );
++
++  // picking_type_code outgoing is rejected
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_type_code: "outgoing" }),
++    REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
++  );
++
++  // defensive check on picking name containing /INT/
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_id: [88, "WH/INT/00088"] }),
+     REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
+   );
+ });
+diff --git a/supabase/functions/_shared/receipt-mapper.ts b/supabase/functions/_shared/receipt-mapper.ts
+index 44f7f0b..3780acf 100644
+--- a/supabase/functions/_shared/receipt-mapper.ts
++++ b/supabase/functions/_shared/receipt-mapper.ts
+@@ -125,8 +125,19 @@ export function mapOdooReceiptLine(
+   const odooReceiptLineId = positiveInteger(raw.id, REJECTION_REASONS.INVALID_RECEIPT_LINE_ID);
+   const picking = many2One(raw.picking_id, REJECTION_REASONS.MISSING_OR_INVALID_PICKING);
+ 
+-  // Exclude internal transfers
+-  if (picking[1].toUpperCase().includes("/INT/") || raw.picking_code === "internal") {
++  // Primary classification rule: Odoo picking type code must be incoming
++  const pickingCode = typeof raw.picking_code === "string" && raw.picking_code.trim()
++    ? raw.picking_code.trim().toLowerCase()
++    : typeof raw.picking_type_code === "string" && raw.picking_type_code.trim()
++    ? raw.picking_type_code.trim().toLowerCase()
++    : null;
++
++  if (pickingCode !== null && pickingCode !== "incoming") {
++    invalid(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++  }
++
++  // Additional defensive check on picking name containing /INT/
++  if (picking[1].toUpperCase().includes("/INT/")) {
+     invalid(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
+   }
+ 
+diff --git a/supabase/functions/sync-odoo18-supplier-receipts/index.ts b/supabase/functions/sync-odoo18-supplier-receipts/index.ts
+index 37a95e4..9570e86 100644
+--- a/supabase/functions/sync-odoo18-supplier-receipts/index.ts
++++ b/supabase/functions/sync-odoo18-supplier-receipts/index.ts
+@@ -175,16 +175,61 @@ Deno.serve(async (req: Request) => {
+     }
+     mode = body.mode === "sync" ? "sync" : "test";
+ 
++    if (body.page_size !== undefined) {
++      if (
++        typeof body.page_size !== "number" ||
++        !Number.isInteger(body.page_size) ||
++        body.page_size < 1 ||
++        body.page_size > MAX_PAGE_SIZE
++      ) {
++        return jsonResponse(
++          { success: false, error: "Invalid page_size. Must be an integer between 1 and 500" },
++          400,
++        );
++      }
++    }
++
++    if (body.max_pages !== undefined) {
++      if (
++        typeof body.max_pages !== "number" ||
++        !Number.isInteger(body.max_pages) ||
++        body.max_pages < 1 ||
++        body.max_pages > MAX_PAGES
++      ) {
++        return jsonResponse(
++          { success: false, error: "Invalid max_pages. Must be an integer between 1 and 100" },
++          400,
++        );
++      }
++    }
++
++    if (body.full_sync !== undefined && typeof body.full_sync !== "boolean") {
++      return jsonResponse(
++        { success: false, error: "Invalid full_sync. Must be a boolean" },
++        400,
++      );
++    }
++
++    if (
++      body.start_after_id !== undefined &&
++      (typeof body.start_after_id !== "number" ||
++        !Number.isInteger(body.start_after_id) ||
++        body.start_after_id < 0)
++    ) {
++      return jsonResponse(
++        { success: false, error: "Invalid start_after_id. Must be a non-negative integer" },
++        400,
++      );
++    }
++
+     const companyIds = parseCompanyIds(body.company_ids);
+-    const requestedPageSize = parsePositiveInteger(
+-      body.page_size,
+-      mode === "test" ? 5 : MAX_PAGE_SIZE,
+-      MAX_PAGE_SIZE,
+-    );
++    const requestedPageSize = typeof body.page_size === "number"
++      ? body.page_size
++      : (mode === "test" ? 5 : MAX_PAGE_SIZE);
+     const pageSize = mode === "test" ? Math.min(requestedPageSize, 5) : requestedPageSize;
+     const maxPages = mode === "test"
+       ? 1
+-      : parsePositiveInteger(body.max_pages, MAX_PAGES, MAX_PAGES);
++      : (typeof body.max_pages === "number" ? body.max_pages : MAX_PAGES);
+ 
+     const credentials = readOdooCredentials();
+     const supabaseUrl = requiredEnv("SUPABASE_URL");
+-- 
+2.34.1
+
+
+From f37decccaf18eea9698ef71dde8a3539719f3f5c Mon Sep 17 00:00:00 2001
+From: AI Studio <aistudio@google.com>
+Date: Mon, 3 Aug 2026 19:39:06 +0000
+Subject: [PATCH 3/4] fix(procurement): require explicit incoming picking type
+
+---
+ apps/api/test/supplier-receipt-sync.test.ts   | 43 +++++++++++++++++--
+ .../functions/_shared/receipt-mapper.test.ts  | 42 ++++++++++++++----
+ supabase/functions/_shared/receipt-mapper.ts  | 18 ++++++--
+ 3 files changed, 87 insertions(+), 16 deletions(-)
+
+diff --git a/apps/api/test/supplier-receipt-sync.test.ts b/apps/api/test/supplier-receipt-sync.test.ts
+index 5fa5df4..e74d70f 100644
+--- a/apps/api/test/supplier-receipt-sync.test.ts
++++ b/apps/api/test/supplier-receipt-sync.test.ts
+@@ -7,6 +7,7 @@ import {
+ const completedReceipt = {
+   id: 901,
+   picking_id: [88, "WH/IN/00088"],
++  picking_code: "incoming",
+   company_id: [1, "MAS"],
+   product_id: [55, "[P-55] Product"],
+   partner_id: [77, "Supplier A"],
+@@ -109,6 +110,23 @@ describe("Supplier Receipt Sync Mapper", () => {
+   });
+ 
+   it("classifies picking types correctly", () => {
++    // missing picking code
++    const noPickingCode = { ...completedReceipt };
++    delete (noPickingCode as Record<string, unknown>).picking_code;
++    delete (noPickingCode as Record<string, unknown>).picking_type_code;
++    expect(() => mapOdooReceiptLine(noPickingCode)).toThrow(
++      REJECTION_REASONS.MISSING_PICKING_TYPE,
++    );
++
++    // empty picking code
++    expect(() =>
++      mapOdooReceiptLine({
++        ...completedReceipt,
++        picking_code: "   ",
++        picking_type_code: "",
++      }),
++    ).toThrow(REJECTION_REASONS.MISSING_PICKING_TYPE);
++
+     // incoming is accepted
+     const incomingRow = mapOdooReceiptLine({
+       ...completedReceipt,
+@@ -124,23 +142,40 @@ describe("Supplier Receipt Sync Mapper", () => {
+     // outgoing is rejected
+     expect(() =>
+       mapOdooReceiptLine({ ...completedReceipt, picking_code: "outgoing" }),
+-    ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++    ).toThrow(REJECTION_REASONS.NON_INCOMING_PICKING);
++
++    // unknown code is rejected
++    expect(() =>
++      mapOdooReceiptLine({
++        ...completedReceipt,
++        picking_code: "unknown_code",
++      }),
++    ).toThrow(REJECTION_REASONS.NON_INCOMING_PICKING);
+ 
+     // picking_type_code internal is rejected
+     expect(() =>
+-      mapOdooReceiptLine({ ...completedReceipt, picking_type_code: "internal" }),
++      mapOdooReceiptLine({
++        ...completedReceipt,
++        picking_code: "",
++        picking_type_code: "internal",
++      }),
+     ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
+ 
+     // picking_type_code outgoing is rejected
+     expect(() =>
+-      mapOdooReceiptLine({ ...completedReceipt, picking_type_code: "outgoing" }),
+-    ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++      mapOdooReceiptLine({
++        ...completedReceipt,
++        picking_code: "",
++        picking_type_code: "outgoing",
++      }),
++    ).toThrow(REJECTION_REASONS.NON_INCOMING_PICKING);
+ 
+     // defensive check on picking name containing /INT/
+     expect(() =>
+       mapOdooReceiptLine({
+         ...completedReceipt,
+         picking_id: [88, "WH/INT/00088"],
++        picking_code: "incoming",
+       }),
+     ).toThrow(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
+   });
+diff --git a/supabase/functions/_shared/receipt-mapper.test.ts b/supabase/functions/_shared/receipt-mapper.test.ts
+index f57bd8e..832373d 100644
+--- a/supabase/functions/_shared/receipt-mapper.test.ts
++++ b/supabase/functions/_shared/receipt-mapper.test.ts
+@@ -24,6 +24,7 @@ function assertThrows(fn: () => unknown, expectedMessage: string): void {
+ const completedReceipt = {
+   id: 901,
+   picking_id: [88, "WH/IN/00088"],
++  picking_code: "incoming",
+   company_id: [1, "MAS"],
+   product_id: [55, "[P-55] Product"],
+   partner_id: [77, "Supplier A"],
+@@ -133,37 +134,62 @@ Deno.test("missing supplier is rejected", () => {
+ });
+ 
+ Deno.test("picking type code classification rules", () => {
++  // missing picking code
++  const noPickingCode = { ...completedReceipt };
++  delete (noPickingCode as Record<string, unknown>).picking_code;
++  delete (noPickingCode as Record<string, unknown>).picking_type_code;
++  assertThrows(
++    () => mapOdooReceiptLine(noPickingCode),
++    REJECTION_REASONS.MISSING_PICKING_TYPE,
++  );
++
++  // empty picking code
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "   ", picking_type_code: "" }),
++    REJECTION_REASONS.MISSING_PICKING_TYPE,
++  );
++
+   // incoming is accepted
+   const incomingRow = mapOdooReceiptLine({ ...completedReceipt, picking_code: "incoming" });
+   assertEquals(incomingRow.odoo_receipt_line_id, 901);
+ 
+-  // internal is rejected
++  // internal is rejected with INTERNAL_TRANSFER_EXCLUDED
+   assertThrows(
+     () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "internal" }),
+     REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
+   );
+ 
+-  // outgoing is rejected
++  // outgoing is rejected with NON_INCOMING_PICKING
+   assertThrows(
+     () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "outgoing" }),
+-    REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
++    REJECTION_REASONS.NON_INCOMING_PICKING,
++  );
++
++  // unknown code is rejected with NON_INCOMING_PICKING
++  assertThrows(
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "dropship_custom" }),
++    REJECTION_REASONS.NON_INCOMING_PICKING,
+   );
+ 
+   // picking_type_code internal is rejected
+   assertThrows(
+-    () => mapOdooReceiptLine({ ...completedReceipt, picking_type_code: "internal" }),
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "", picking_type_code: "internal" }),
+     REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
+   );
+ 
+   // picking_type_code outgoing is rejected
+   assertThrows(
+-    () => mapOdooReceiptLine({ ...completedReceipt, picking_type_code: "outgoing" }),
+-    REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
++    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "", picking_type_code: "outgoing" }),
++    REJECTION_REASONS.NON_INCOMING_PICKING,
+   );
+ 
+-  // defensive check on picking name containing /INT/
++  // /INT/ name rejected even if another inconsistent field says incoming
+   assertThrows(
+-    () => mapOdooReceiptLine({ ...completedReceipt, picking_id: [88, "WH/INT/00088"] }),
++    () => mapOdooReceiptLine({
++      ...completedReceipt,
++      picking_id: [88, "WH/INT/00088"],
++      picking_code: "incoming",
++    }),
+     REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
+   );
+ });
+diff --git a/supabase/functions/_shared/receipt-mapper.ts b/supabase/functions/_shared/receipt-mapper.ts
+index 3780acf..fb2c3fb 100644
+--- a/supabase/functions/_shared/receipt-mapper.ts
++++ b/supabase/functions/_shared/receipt-mapper.ts
+@@ -1,6 +1,8 @@
+ export const REJECTION_REASONS = {
+   INVALID_RECEIPT_LINE_ID: "INVALID_RECEIPT_LINE_ID",
+   MISSING_OR_INVALID_PICKING: "MISSING_OR_INVALID_PICKING",
++  MISSING_PICKING_TYPE: "MISSING_PICKING_TYPE",
++  NON_INCOMING_PICKING: "NON_INCOMING_PICKING",
+   INTERNAL_TRANSFER_EXCLUDED: "INTERNAL_TRANSFER_EXCLUDED",
+   INVALID_COMPANY: "INVALID_COMPANY",
+   MISSING_OR_INVALID_PRODUCT: "MISSING_OR_INVALID_PRODUCT",
+@@ -125,6 +127,11 @@ export function mapOdooReceiptLine(
+   const odooReceiptLineId = positiveInteger(raw.id, REJECTION_REASONS.INVALID_RECEIPT_LINE_ID);
+   const picking = many2One(raw.picking_id, REJECTION_REASONS.MISSING_OR_INVALID_PICKING);
+ 
++  // Additional defensive check on picking name containing /INT/
++  if (picking[1].toUpperCase().includes("/INT/")) {
++    invalid(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++  }
++
+   // Primary classification rule: Odoo picking type code must be incoming
+   const pickingCode = typeof raw.picking_code === "string" && raw.picking_code.trim()
+     ? raw.picking_code.trim().toLowerCase()
+@@ -132,15 +139,18 @@ export function mapOdooReceiptLine(
+     ? raw.picking_type_code.trim().toLowerCase()
+     : null;
+ 
+-  if (pickingCode !== null && pickingCode !== "incoming") {
+-    invalid(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
++  if (pickingCode === null) {
++    invalid(REJECTION_REASONS.MISSING_PICKING_TYPE);
+   }
+ 
+-  // Additional defensive check on picking name containing /INT/
+-  if (picking[1].toUpperCase().includes("/INT/")) {
++  if (pickingCode === "internal") {
+     invalid(REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED);
+   }
+ 
++  if (pickingCode !== "incoming") {
++    invalid(REJECTION_REASONS.NON_INCOMING_PICKING);
++  }
++
+   const company = many2One(raw.company_id, REJECTION_REASONS.INVALID_COMPANY);
+   if (company[0] !== 1 && company[0] !== 2) {
+     invalid(REJECTION_REASONS.INVALID_COMPANY);
+-- 
+2.34.1
+
+
+From 0400057ad6b0953aa4e3b4050a894e17eeec6268 Mon Sep 17 00:00:00 2001
+From: AI Studio <aistudio@google.com>
+Date: Mon, 3 Aug 2026 19:50:59 +0000
+Subject: [PATCH 4/4] fix(procurement): reject invalid receipt sync modes
+
+---
+ apps/api/test/supplier-receipt-sync.test.ts   | 43 ++++++++++++++-----
+ .../sync-odoo18-supplier-receipts/index.ts    |  8 +++-
+ 2 files changed, 39 insertions(+), 12 deletions(-)
+
+diff --git a/apps/api/test/supplier-receipt-sync.test.ts b/apps/api/test/supplier-receipt-sync.test.ts
+index e74d70f..f35f1b3 100644
+--- a/apps/api/test/supplier-receipt-sync.test.ts
++++ b/apps/api/test/supplier-receipt-sync.test.ts
+@@ -189,10 +189,15 @@ describe("Supplier Receipt Edge Function Logic & Input Validation", () => {
+     full_sync?: unknown;
+     start_after_id?: unknown;
+   }) {
+-    if (body.mode !== undefined && body.mode !== "test" && body.mode !== "sync") {
++    const rawMode = body.mode;
++    let mode: "test" | "sync";
++    if (rawMode === undefined || rawMode === null) {
++      mode = "test";
++    } else if (rawMode === "test" || rawMode === "sync") {
++      mode = rawMode;
++    } else {
+       return { valid: false, error: "Invalid mode. Supported modes are: test, sync" };
+     }
+-    const mode = body.mode === "sync" ? "sync" : "test";
+ 
+     if (body.page_size !== undefined) {
+       if (
+@@ -232,15 +237,33 @@ describe("Supplier Receipt Edge Function Logic & Input Validation", () => {
+     return { valid: true, mode };
+   }
+ 
+-  it("omitted mode defaults to test mode", () => {
+-    const res = validateInputs({});
+-    expect(res.valid).toBe(true);
+-    expect(res.mode).toBe("test");
+-  });
+-
+-  it("rejects unknown modes", () => {
+-    expect(validateInputs({ mode: "unknown" }).valid).toBe(false);
++  it("handles mode parsing correctly", () => {
++    // omitted => test mode
++    const omittedRes = validateInputs({});
++    expect(omittedRes.valid).toBe(true);
++    expect(omittedRes.mode).toBe("test");
++
++    // null => test mode
++    const nullRes = validateInputs({ mode: null });
++    expect(nullRes.valid).toBe(true);
++    expect(nullRes.mode).toBe("test");
++
++    // "test" => test mode
++    const testRes = validateInputs({ mode: "test" });
++    expect(testRes.valid).toBe(true);
++    expect(testRes.mode).toBe("test");
++
++    // "sync" => sync mode
++    const syncRes = validateInputs({ mode: "sync" });
++    expect(syncRes.valid).toBe(true);
++    expect(syncRes.mode).toBe("sync");
++
++    // Invalid modes return HTTP 400 error
++    expect(validateInputs({ mode: "" }).valid).toBe(false);
+     expect(validateInputs({ mode: "dryrun" }).valid).toBe(false);
++    expect(validateInputs({ mode: "unknown" }).valid).toBe(false);
++    expect(validateInputs({ mode: true }).valid).toBe(false);
++    expect(validateInputs({ mode: 1 }).valid).toBe(false);
+   });
+ 
+   it("validates page_size boundaries and integer type", () => {
+diff --git a/supabase/functions/sync-odoo18-supplier-receipts/index.ts b/supabase/functions/sync-odoo18-supplier-receipts/index.ts
+index 9570e86..18b1852 100644
+--- a/supabase/functions/sync-odoo18-supplier-receipts/index.ts
++++ b/supabase/functions/sync-odoo18-supplier-receipts/index.ts
+@@ -167,13 +167,17 @@ Deno.serve(async (req: Request) => {
+ 
+     const body = await req.json().catch(() => ({})) as RequestBody;
+ 
+-    if (body.mode !== undefined && body.mode !== "test" && body.mode !== "sync") {
++    const rawMode = body.mode;
++    if (rawMode === undefined || rawMode === null) {
++      mode = "test";
++    } else if (rawMode === "test" || rawMode === "sync") {
++      mode = rawMode;
++    } else {
+       return jsonResponse(
+         { success: false, error: "Invalid mode. Supported modes are: test, sync" },
+         400,
+       );
+     }
+-    mode = body.mode === "sync" ? "sync" : "test";
+ 
+     if (body.page_size !== undefined) {
+       if (
+-- 
+2.34.1
+

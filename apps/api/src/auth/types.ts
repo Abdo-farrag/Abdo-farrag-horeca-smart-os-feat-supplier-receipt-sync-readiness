@@ -1,0 +1,100 @@
+export type AppRole = 'reviewer' | 'admin';
+
+export interface VerifiedAccessToken {
+  userId: string;
+}
+
+export interface AppUserRole {
+  userId: string;
+  displayName: string;
+  role: AppRole;
+  isActive: boolean;
+}
+
+export interface AuthDependencies {
+  overviewPasswordHash: string;
+  sessionSecret: string;
+  overviewAuthDisabled: boolean;
+  verifyOverviewPassword?: (password: string, passwordHash: string) => Promise<boolean>;
+  verifyAccessToken: (token: string) => Promise<VerifiedAccessToken | null>;
+  findUserRole: (userId: string) => Promise<AppUserRole | null>;
+}
+
+export interface SyncStatus {
+  finishedAt: string | null;
+  freshnessStatus: string | null;
+}
+
+export interface ProcurementOverviewParams {
+  companyId: number | null;
+  coverageDays: number;
+  search: string;
+  priorities: string[];
+  supplierStatuses: string[];
+  needsPurchase: boolean | null;
+  noSupplier: boolean | null;
+  insufficientData: boolean | null;
+  sort: string;
+  direction: string;
+  page: number;
+  pageSize: number;
+}
+
+export interface ProcurementDependencies {
+  getOverview: (params: ProcurementOverviewParams) => Promise<unknown>;
+  getSyncStatus: () => Promise<SyncStatus | null>;
+}
+
+export interface ApprovalDecision {
+  productCode: string;
+  approvedQty: number | null;
+  approvedSupplierId: number | null;
+  approvedSupplierName: string | null;
+  decisionStatus: string;
+  buyerNote: string | null;
+  version: number;
+  updatedAt: string | null;
+}
+
+export interface BulkUpdateResult {
+  batchId: string;
+  items: ApprovalDecision[];
+}
+
+export interface ReviewDependencies {
+  getReviewProducts: (params: {
+    company?: string;
+    search?: string;
+    priority?: string;
+    decisionStatus?: string;
+    noSupplier?: boolean;
+    page: number;
+    pageSize: number;
+  }) => Promise<unknown>;
+  approveRecommendation: (
+    productCode: string,
+    decisionStatus: string,
+    approvedQty: number | null,
+    approvedSupplierId: number | null,
+    approvedSupplierName: string | null,
+    buyerNote: string | null,
+    expectedVersion: number,
+  ) => Promise<ApprovalDecision>;
+  bulkUpdateRecommendations: (
+    items: Array<{
+      productCode: string;
+      approvedQty: number | null;
+      approvedSupplierId: number | null;
+      approvedSupplierName: string | null;
+      expectedVersion: number;
+    }>,
+    decisionStatus: string,
+    buyerNote: string | null,
+  ) => Promise<BulkUpdateResult>;
+}
+
+export interface BuildAppOptions {
+  auth?: AuthDependencies;
+  procurement?: ProcurementDependencies;
+  review?: ReviewDependencies;
+}
