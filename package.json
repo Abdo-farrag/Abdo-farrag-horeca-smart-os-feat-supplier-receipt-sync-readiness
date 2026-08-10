@@ -4,14 +4,19 @@
   "private": true,
   "packageManager": "npm@10.9.8",
   "type": "module",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "npm run build -w @horeca/contracts && npm run build -w @horeca/web && npm run dev -w @horeca/api",
     "build": "npm run build -w @horeca/contracts && npm run build -w @horeca/web && npm run build -w @horeca/api",
     "start": "node apps/api/dist/server.js",
     "test": "npm run test -ws --if-present",
     "typecheck": "npm run typecheck -ws --if-present",
-    "lint": "npm run lint -ws --if-present"
+    "lint": "npm run lint -ws --if-present",
+    "pretypecheck": "npm run build -w @horeca/contracts",
+    "pretest": "npm run build -w @horeca/contracts"
   },
   "engines": {
     "node": ">=22 <23"
