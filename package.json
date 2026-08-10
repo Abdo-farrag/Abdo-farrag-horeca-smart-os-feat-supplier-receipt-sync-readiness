@@ -16,7 +16,7 @@
     "typecheck": "npm run typecheck -ws --if-present",
     "lint": "npm run lint -ws --if-present",
     "pretypecheck": "npm run build -w @horeca/contracts",
-    "pretest": "npm run build -w @horeca/contracts"
+    "pretest": "npm run build -w @horeca/contracts && npm run build -w @horeca/web"
   },
   "engines": {
     "node": ">=22 <23"

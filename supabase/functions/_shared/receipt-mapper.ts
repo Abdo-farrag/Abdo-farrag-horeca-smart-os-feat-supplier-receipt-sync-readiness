@@ -114,7 +114,10 @@ function resolveProductIdentity(
     const fallbackName = displayName.replace(/^\[[^\]]+\]\s*/, "").trim();
     return {
       productCode: explicitCode,
-      productName: nonEmptyText(explicitName || fallbackName, REJECTION_REASONS.MISSING_OR_INVALID_PRODUCT),
+      productName: nonEmptyText(
+        explicitName || fallbackName,
+        REJECTION_REASONS.MISSING_OR_INVALID_PRODUCT,
+      ),
     };
   }
 

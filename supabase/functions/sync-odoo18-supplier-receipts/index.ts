@@ -57,16 +57,6 @@ function jsonResponse(body: JsonRecord, status = 200): Response {
   });
 }
 
-function parsePositiveInteger(
-  value: unknown,
-  fallback: number,
-  maximum: number,
-): number {
-  const parsed = Number(value ?? fallback);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return fallback;
-  return Math.min(parsed, maximum);
-}
-
 function parseNonNegativeInteger(value: unknown, fallback: number): number {
   const parsed = Number(value ?? fallback);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
