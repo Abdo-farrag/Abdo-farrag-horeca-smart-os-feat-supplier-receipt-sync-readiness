@@ -7,7 +7,7 @@ create table public.sync_logs (
   id bigint generated always as identity primary key,
   sync_type text not null,
   status text not null,
-  rows_count bigint not null default 0,
+  rows_count integer not null default 0,
   message text null,
   started_at timestamptz not null default now(),
   finished_at timestamptz null
@@ -19,7 +19,7 @@ as
 select
   null::text as sync_type,
   null::text as status,
-  null::bigint as rows_count,
+  null::integer as rows_count,
   null::text as message,
   null::timestamptz as started_at,
   null::timestamptz as finished_at
