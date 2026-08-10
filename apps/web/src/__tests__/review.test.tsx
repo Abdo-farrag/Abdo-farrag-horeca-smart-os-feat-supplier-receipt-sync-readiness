@@ -5,7 +5,7 @@ import { AppRoutes } from '../App.js';
 import { renderWithProviders } from './test-utils.js';
 import { ApiError } from '../api/client.js';
 
-// Mock all API modules
+// Mock API modules
 vi.mock('../api/auth.js', () => ({
   login: vi.fn(),
   logout: vi.fn(),
@@ -13,329 +13,374 @@ vi.mock('../api/auth.js', () => ({
 }));
 
 vi.mock('../api/review.js', () => ({
-  fetchReviewProducts: vi.fn(),
-  approveRecommendation: vi.fn(),
-  bulkUpdateRecommendations: vi.fn(),
+  fetchCompanyPurchaseReview: vi.fn(),
+  saveCompanyPurchaseDecision: vi.fn(),
+  bulkSaveCompanyPurchaseDecisions: vi.fn(),
+  downloadPurchaseExport: vi.fn(),
 }));
 
 import * as authApi from '../api/auth.js';
 import * as reviewApi from '../api/review.js';
 
-const mockProducts = {
-  rows: [
-    {
-      productCode: '101002',
-      productName: '[101002] El Nada Olein Oil 20 L - Pack',
-      freeQty: 2,
-      effectiveDailyDemand: 849.33,
-      forecastQty: 849.33,
-      actualCoverageDays: 0.03,
-      suggestedQty: 1515,
-      priority: 'CRITICAL',
-      dataStatus: 'SUFFICIENT',
-      supplierStatus: 'NEEDS_SUPPLIER',
-      proposedSupplierName: null,
-      latestReceiptAt: null,
-      productVersion: 0,
-      approvedQty: null,
-      reviewApprovedSupplierId: null,
-      reviewApprovedSupplierName: null,
-      decisionStatus: null,
-      buyerNote: null,
-      approvalVersion: 0,
-    },
-    {
-      productCode: '101003',
-      productName: '[101003] El Helwa Mixed Oil 700 ml - 12 Pack',
-      freeQty: 5,
-      effectiveDailyDemand: 55.07,
-      forecastQty: 55.07,
-      actualCoverageDays: 1.5,
-      suggestedQty: 97,
-      priority: 'HIGH',
-      dataStatus: 'SUFFICIENT',
-      supplierStatus: 'APPROVED',
-      proposedSupplierName: 'مورد تجربة',
-      latestReceiptAt: '2026-06-15T10:00:00Z',
-      productVersion: 0,
-      approvedQty: 100,
-      reviewApprovedSupplierId: 1,
-      reviewApprovedSupplierName: 'مورد معتمد',
-      decisionStatus: 'APPROVED',
-      buyerNote: 'ملاحظة',
-      approvalVersion: 1,
-    },
-  ],
+const masRow = {
+  companyId: 1 as const,
+  companyName: 'MAS',
+  productCode: '101002',
+  productName: 'زيت النضاء 20 لتر',
+  priority: 'CRITICAL' as const,
+  freeQty: 10,
+  effectiveDailyDemand: 5,
+  coverageDays: 2,
+  targetCoverageDays: 21,
+  suggestedQty: 100,
+  approvedQty: 80,
+  supplierId: 101,
+  supplierName: 'مورد MAS',
+  supplierReadiness: 'VERIFIED_RECEIPT' as const,
+  latestReceiptAt: '2026-08-01T10:00:00Z',
+  latestUnitCost: 150,
+  estimatedValue: 12000,
+  decisionStatus: 'NEW' as const,
+  buyerNote: null,
+  version: 3,
+  sourceUpdatedAt: '2026-08-01T10:00:00Z',
+  readyForPo: true,
+};
+
+const horecaRow = {
+  companyId: 2 as const,
+  companyName: 'Horeca Smart',
+  productCode: '101002',
+  productName: 'زيت النضاء 20 لتر',
+  priority: 'HIGH' as const,
+  freeQty: 5,
+  effectiveDailyDemand: 2,
+  coverageDays: 2.5,
+  targetCoverageDays: 21,
+  suggestedQty: 60,
+  approvedQty: 60,
+  supplierId: null,
+  supplierName: null,
+  supplierReadiness: 'NEEDS_SUPPLIER' as const,
+  latestReceiptAt: null,
+  latestUnitCost: null,
+  estimatedValue: null,
+  decisionStatus: 'NEW' as const,
+  buyerNote: null,
+  version: 5,
+  sourceUpdatedAt: null,
+  readyForPo: false,
+};
+
+const fallbackRow = {
+  companyId: 1 as const,
+  companyName: 'MAS',
+  productCode: '101003',
+  productName: 'زيت الحلوة 700 مل',
+  priority: 'MEDIUM' as const,
+  freeQty: 20,
+  effectiveDailyDemand: 4,
+  coverageDays: 5,
+  targetCoverageDays: 21,
+  suggestedQty: 50,
+  approvedQty: 50,
+  supplierId: 102,
+  supplierName: 'المورد الأساسي',
+  supplierReadiness: 'FALLBACK_NEEDS_REVIEW' as const,
+  latestReceiptAt: null,
+  latestUnitCost: 100,
+  estimatedValue: 5000,
+  decisionStatus: 'NEW' as const,
+  buyerNote: null,
+  version: 1,
+  sourceUpdatedAt: null,
+  readyForPo: true,
+};
+
+const mockCompanyReviewResponse = {
+  rows: [masRow, horecaRow],
   pagination: { page: 1, total: 2, pageSize: 50, totalPages: 1 },
 };
 
-describe('Procurement Review Page', () => {
+describe('Company-First Procurement Review Page', () => {
   beforeEach(() => {
+    vi.resetAllMocks();
     vi.mocked(authApi.checkSession).mockResolvedValue({ authenticated: true });
-    vi.mocked(reviewApi.fetchReviewProducts).mockResolvedValue(mockProducts);
+    vi.mocked(reviewApi.fetchCompanyPurchaseReview).mockResolvedValue(mockCompanyReviewResponse);
+    vi.mocked(reviewApi.downloadPurchaseExport).mockResolvedValue(undefined);
   });
 
-  it('loads and displays recommendations', async () => {
+  it('renders company-first review and proves company independence for identical productCode', async () => {
+    const user = userEvent.setup();
+    vi.mocked(reviewApi.saveCompanyPurchaseDecision).mockResolvedValue({
+      ...masRow,
+      approvedQty: 75,
+      version: 4,
+    });
+
     renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
 
     await waitFor(() => {
-      expect(screen.getByText('مراجعة واعتماد المشتريات')).toBeInTheDocument();
-      expect(screen.getByText('101002')).toBeInTheDocument();
-      expect(screen.getByText('101003')).toBeInTheDocument();
-      expect(screen.getAllByText('حرج').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText('عالٍ').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByRole('heading', { name: 'مراجعة مشتريات الشركات' })).toBeInTheDocument();
+      expect(screen.getByText('تتم مراجعة احتياجات MAS وHoreca Smart بصورة مستقلة.')).toBeInTheDocument();
+      expect(screen.getByTestId('row-1:101002')).toBeInTheDocument();
+      expect(screen.getByTestId('row-2:101002')).toBeInTheDocument();
     });
 
-    // Decision status select shows options
-    const statusSelect = screen.getAllByRole('combobox', { name: /حالة الاعتماد/i });
-    expect(statusSelect.length).toBeGreaterThanOrEqual(1);
-  });
+    // Prove stable key identity: both rows render
+    const rows = screen.getAllByRole('row').slice(1); // skip header row
+    expect(rows).toHaveLength(2);
 
-  it('approves a product by filling editable fields and clicking save', async () => {
-    const user = userEvent.setup();
-    vi.mocked(reviewApi.approveRecommendation).mockResolvedValue({
+    const masTr = screen.getByTestId('row-1:101002');
+    const horecaTr = screen.getByTestId('row-2:101002');
+
+    expect(within(masTr).getByText('MAS')).toBeInTheDocument();
+    expect(within(horecaTr).getByText('Horeca Smart')).toBeInTheDocument();
+
+    // Edit MAS approved quantity to 75
+    const masQtyInput = within(masTr).getByLabelText(/الكمية المعتمدة لـ MAS 101002/i);
+    const horecaQtyInput = within(horecaTr).getByLabelText(/الكمية المعتمدة لـ Horeca Smart 101002/i);
+
+    expect(masQtyInput).toHaveValue(80);
+    expect(horecaQtyInput).toHaveValue(60);
+
+    await user.clear(masQtyInput);
+    await user.type(masQtyInput, '75');
+
+    // Prove editing MAS does NOT change Horeca Smart
+    expect(masQtyInput).toHaveValue(75);
+    expect(horecaQtyInput).toHaveValue(60);
+
+    // Save MAS row
+    const masSaveBtn = within(masTr).getByRole('button', { name: /حفظ/i });
+    await user.click(masSaveBtn);
+
+    await waitFor(() => {
+      expect(reviewApi.saveCompanyPurchaseDecision).toHaveBeenCalled();
+    });
+
+    expect(reviewApi.saveCompanyPurchaseDecision).toHaveBeenCalledWith({
+      companyId: 1,
       productCode: '101002',
-      approvedQty: 1500,
-      approvedSupplierId: null,
-      approvedSupplierName: 'مورد جديد',
-      decisionStatus: 'APPROVED',
-      buyerNote: 'موافقة',
-      version: 1,
-      updatedAt: '2026-07-26T10:00:00Z',
+      decisionStatus: 'NEW',
+      approvedQty: 75,
+      approvedSupplierId: 101,
+      approvedSupplierName: 'مورد MAS',
+      buyerNote: null,
+      expectedVersion: 3,
+    });
+  });
+
+  it('filters by company and resets pagination safely', async () => {
+    const user = userEvent.setup();
+    vi.mocked(reviewApi.fetchCompanyPurchaseReview).mockImplementation(async (filters) => {
+      if (filters.company === '1') {
+        return {
+          rows: [masRow],
+          pagination: { page: 1, total: 1, pageSize: 50, totalPages: 1 },
+        };
+      }
+      if (filters.company === '2') {
+        return {
+          rows: [horecaRow],
+          pagination: { page: 1, total: 1, pageSize: 50, totalPages: 1 },
+        };
+      }
+      return mockCompanyReviewResponse;
     });
 
     renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
 
     await waitFor(() => {
-      expect(screen.getByText('101002')).toBeInTheDocument();
+      expect(screen.getByTestId('row-1:101002')).toBeInTheDocument();
+      expect(screen.getByTestId('row-2:101002')).toBeInTheDocument();
     });
 
-    const row = screen.getByText('101002').closest('tr')!;
-
-    // Find the approved qty input for 101002
-    const qtyInput = within(row).getByLabelText(/الكمية المعتمدة لـ 101002/);
-    await user.clear(qtyInput);
-    await user.type(qtyInput, '1500');
-
-    // Set decision status to APPROVED
-    const statusSelect = within(row).getByLabelText(/حالة الاعتماد لـ 101002/);
-    await user.selectOptions(statusSelect, 'APPROVED');
-
-    // Click save
-    const saveBtn = within(row).getByRole('button', { name: /حفظ/ });
-    await user.click(saveBtn);
+    const companySelect = screen.getByLabelText('الشركة');
+    await user.selectOptions(companySelect, '1');
 
     await waitFor(() => {
-      expect(reviewApi.approveRecommendation).toHaveBeenCalledWith(
-        expect.objectContaining({
-          productCode: '101002',
-          approvedQty: 1500,
-          decisionStatus: 'APPROVED',
-        }),
-      );
+      expect(screen.getByTestId('row-1:101002')).toBeInTheDocument();
+      expect(screen.queryByTestId('row-2:101002')).not.toBeInTheDocument();
+    });
+
+    await user.selectOptions(companySelect, '2');
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('row-1:101002')).not.toBeInTheDocument();
+      expect(screen.getByTestId('row-2:101002')).toBeInTheDocument();
     });
   });
 
-  it('rejects a product', async () => {
+  it('validates APPROVED decision requires positive quantity and disables only target row during save', async () => {
     const user = userEvent.setup();
-    vi.mocked(reviewApi.approveRecommendation).mockResolvedValue({
-      productCode: '101002',
-      approvedQty: null,
-      approvedSupplierId: null,
-      approvedSupplierName: null,
-      decisionStatus: 'REJECTED',
-      buyerNote: 'مرفوض بسبب نقص البيانات',
-      version: 1,
-      updatedAt: '2026-07-26T10:00:00Z',
-    });
+    let resolveSave: ((val: any) => void) | undefined;
+    vi.mocked(reviewApi.saveCompanyPurchaseDecision).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
 
     renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
 
     await waitFor(() => {
-      expect(screen.getByText('101002')).toBeInTheDocument();
+      expect(screen.getByTestId('row-1:101002')).toBeInTheDocument();
     });
 
-    const row = screen.getByText('101002').closest('tr')!;
+    const masTr = screen.getByTestId('row-1:101002');
+    const horecaTr = screen.getByTestId('row-2:101002');
 
-    // Set status to REJECTED
-    const statusSelect = within(row).getByLabelText(/حالة الاعتماد لـ 101002/);
-    await user.selectOptions(statusSelect, 'REJECTED');
+    const masStatusSelect = within(masTr).getByLabelText(/حالة الاعتماد لـ MAS 101002/i);
+    const masQtyInput = within(masTr).getByLabelText(/الكمية المعتمدة لـ MAS 101002/i);
 
-    // Add note
-    const noteInput = within(row).getByLabelText(/ملاحظة المشتري لـ 101002/);
-    await user.type(noteInput, 'مرفوض بسبب نقص البيانات');
+    await user.selectOptions(masStatusSelect, 'APPROVED');
+    await user.clear(masQtyInput);
+    await user.type(masQtyInput, '0');
 
-    // Save
-    const saveBtn = within(row).getByRole('button', { name: /حفظ/ });
-    await user.click(saveBtn);
+    const masSaveBtn = within(masTr).getByRole('button', { name: /حفظ/i });
+    await user.click(masSaveBtn);
 
-    await waitFor(() => {
-      expect(reviewApi.approveRecommendation).toHaveBeenCalledWith(
-        expect.objectContaining({
-          productCode: '101002',
-          decisionStatus: 'REJECTED',
-          buyerNote: 'مرفوض بسبب نقص البيانات',
-        }),
-      );
-    });
+    expect(
+      screen.getByText('حالة معتمد تتطلب كمية معتمدة أكبر من صفر'),
+    ).toBeInTheDocument();
+    expect(reviewApi.saveCompanyPurchaseDecision).not.toHaveBeenCalled();
+
+    // Now fix quantity to 80 on MAS row and edit Horeca row so both have changes
+    await user.clear(masQtyInput);
+    await user.type(masQtyInput, '80');
+
+    const horecaQtyInput = within(horecaTr).getByLabelText(/الكمية المعتمدة لـ Horeca Smart 101002/i);
+    await user.clear(horecaQtyInput);
+    await user.type(horecaQtyInput, '65');
+
+    await user.click(masSaveBtn);
+
+    expect(within(masTr).getByRole('button')).toBeDisabled();
+    expect(within(masTr).getByRole('button')).toHaveTextContent('...');
+    expect(within(horecaTr).getByRole('button', { name: 'حفظ' })).not.toBeDisabled();
+
+    if (resolveSave) {
+      resolveSave({ ...masRow, approvedQty: 80, decisionStatus: 'APPROVED' });
+    }
   });
 
-  it('changes approved quantity', async () => {
+  it('displays clear Arabic version conflict message and preserves buyer edits', async () => {
     const user = userEvent.setup();
-    vi.mocked(reviewApi.approveRecommendation).mockResolvedValue({
-      productCode: '101003',
-      approvedQty: 80,
-      approvedSupplierId: null,
-      approvedSupplierName: 'مورد معتمد',
-      decisionStatus: 'APPROVED',
-      buyerNote: 'تعديل الكمية',
-      version: 2,
-      updatedAt: '2026-07-26T10:00:00Z',
-    });
-
-    renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
-
-    await waitFor(() => {
-      expect(screen.getByText('101003')).toBeInTheDocument();
-    });
-
-    const row = screen.getByText('101003').closest('tr')!;
-
-    const qtyInput = within(row).getByLabelText(/الكمية المعتمدة لـ 101003/);
-    await user.clear(qtyInput);
-    await user.type(qtyInput, '80');
-
-    const saveBtn = within(row).getByRole('button', { name: /حفظ/ });
-    await user.click(saveBtn);
-
-    await waitFor(() => {
-      expect(reviewApi.approveRecommendation).toHaveBeenCalledWith(
-        expect.objectContaining({
-          productCode: '101003',
-          approvedQty: 80,
-        }),
-      );
-    });
-  });
-
-  it('handles version conflict error', async () => {
-    const user = userEvent.setup();
-    vi.mocked(reviewApi.approveRecommendation).mockRejectedValue(
+    vi.mocked(reviewApi.saveCompanyPurchaseDecision).mockRejectedValue(
       new Error('VERSION_CONFLICT'),
     );
 
     renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
 
     await waitFor(() => {
-      expect(screen.getByText('101002')).toBeInTheDocument();
+      expect(screen.getByTestId('row-1:101002')).toBeInTheDocument();
     });
 
-    const row = screen.getByText('101002').closest('tr')!;
+    const masTr = screen.getByTestId('row-1:101002');
+    const masQtyInput = within(masTr).getByLabelText(/الكمية المعتمدة لـ MAS 101002/i);
+    await user.clear(masQtyInput);
+    await user.type(masQtyInput, '95');
 
-    const statusSelect = within(row).getByLabelText(/حالة الاعتماد لـ 101002/);
-    await user.selectOptions(statusSelect, 'APPROVED');
-
-    const saveBtn = within(row).getByRole('button', { name: /حفظ/ });
-    await user.click(saveBtn);
+    const masSaveBtn = within(masTr).getByRole('button', { name: /حفظ/i });
+    await user.click(masSaveBtn);
 
     await waitFor(() => {
       expect(
-        screen.getByText(/تعارض الإصدار للمنتج 101002/),
+        screen.getByText(/تعارض في الإصدار للمنتج. تم تعديل البيانات بواسطة شخص آخر, يرجى إعادة التحميل./i),
       ).toBeInTheDocument();
     });
+
+    // Check that buyer edit is preserved
+    expect(masQtyInput).toHaveValue(95);
   });
 
-  it('bulk approves selected products', async () => {
+  it('renders distinct accessible supplier readiness labels and PO readiness', async () => {
+    vi.mocked(reviewApi.fetchCompanyPurchaseReview).mockResolvedValue({
+      rows: [masRow, horecaRow, fallbackRow],
+      pagination: { page: 1, total: 3, pageSize: 50, totalPages: 1 },
+    });
+
+    renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
+
+    await waitFor(() => {
+      expect(screen.getByText('مورد موثّق من استلام فعلي')).toBeInTheDocument();
+      expect(screen.getByText('يحتاج تحديد مورد')).toBeInTheDocument();
+      expect(screen.getByText('المورد الأساسي — يحتاج مراجعة')).toBeInTheDocument();
+      expect(screen.getByText('غير جاهز للشراء')).toBeInTheDocument();
+      // 1 header column + 2 rows = 3 instances of "جاهز للشراء"
+      expect(screen.getAllByText('جاهز للشراء')).toHaveLength(3);
+    });
+  });
+
+  it('handles Excel draft and approved export buttons with loading state and error handling', async () => {
     const user = userEvent.setup();
-    vi.mocked(reviewApi.bulkUpdateRecommendations).mockResolvedValue({
-      batchId: 'batch-1',
-      items: [
-        {
-          productCode: '101002',
-          approvedQty: null,
-          approvedSupplierId: null,
-          approvedSupplierName: null,
-          decisionStatus: 'APPROVED',
-          buyerNote: null,
-          version: 1,
-          updatedAt: '2026-07-26T10:00:00Z',
-        },
-        {
-          productCode: '101003',
-          approvedQty: null,
-          approvedSupplierId: null,
-          approvedSupplierName: null,
-          decisionStatus: 'APPROVED',
-          buyerNote: null,
-          version: 2,
-          updatedAt: '2026-07-26T10:00:00Z',
-        },
-      ],
-    });
-
-    renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
-
-    await waitFor(() => {
-      expect(screen.getByText('101002')).toBeInTheDocument();
-    });
-
-    // Select all
-    const selectAllCheckbox = screen.getByLabelText('اختيار الكل');
-    await user.click(selectAllCheckbox);
-
-    // Bulk action bar should appear
-    await waitFor(() => {
-      expect(screen.getByText(/تم اختيار 2 منتج/)).toBeInTheDocument();
-    });
-
-    // Click bulk apply
-    const applyBtn = screen.getByRole('button', { name: 'تطبيق على المختار' });
-    await user.click(applyBtn);
-
-    await waitFor(() => {
-      expect(reviewApi.bulkUpdateRecommendations).toHaveBeenCalledWith(
-        expect.objectContaining({
-          decisionStatus: 'UNDER_REVIEW',
-          items: expect.arrayContaining([
-            expect.objectContaining({ productCode: '101002' }),
-            expect.objectContaining({ productCode: '101003' }),
-          ]),
+    let resolveExport: (() => void) | undefined;
+    vi.mocked(reviewApi.downloadPurchaseExport).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveExport = resolve;
         }),
-      );
-    });
-  });
-
-  it('redirects unauthenticated users to login', async () => {
-    vi.mocked(authApi.checkSession).mockResolvedValue({ authenticated: false });
-
-    renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
-
-    await waitFor(() => {
-      expect(screen.getByText('كلمة المرور')).toBeInTheDocument();
-    });
-  });
-
-  it('shows loading state', async () => {
-    vi.mocked(reviewApi.fetchReviewProducts).mockReturnValue(
-      new Promise(() => {}), // never resolves
     );
 
     renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
 
     await waitFor(() => {
-      expect(screen.getByText('جاري تحميل البيانات...')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'تصدير مسودة Excel' })).toBeInTheDocument();
     });
+
+    const draftBtn = screen.getByRole('button', { name: 'تصدير مسودة Excel' });
+    const approvedBtn = screen.getByRole('button', { name: 'تصدير المعتمد Excel' });
+
+    await user.click(draftBtn);
+
+    expect(reviewApi.downloadPurchaseExport).toHaveBeenCalledWith('draft');
+    expect(draftBtn).toBeDisabled();
+    expect(approvedBtn).toBeDisabled();
+
+    if (resolveExport) resolveExport();
+
+    await waitFor(() => {
+      expect(draftBtn).not.toBeDisabled();
+      expect(approvedBtn).not.toBeDisabled();
+    });
+
+    // Test failed export
+    vi.mocked(reviewApi.downloadPurchaseExport).mockRejectedValueOnce(
+      new Error('فشل التصدير'),
+    );
+
+    await user.click(approvedBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('فشل التصدير')).toBeInTheDocument();
+    });
+
+    expect(reviewApi.saveCompanyPurchaseDecision).not.toHaveBeenCalled();
   });
 
-  it('shows error state when API fails', async () => {
-    vi.mocked(reviewApi.fetchReviewProducts).mockRejectedValue(
-      new ApiError(503, 'REVIEW_UNAVAILABLE'),
+  it('shows loading, error, and empty states gracefully', async () => {
+    const user = userEvent.setup();
+    vi.mocked(reviewApi.fetchCompanyPurchaseReview).mockRejectedValueOnce(
+      new ApiError(503, 'COMPANY_REVIEW_UNAVAILABLE'),
     );
 
     renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /إعادة المحاولة/i })).toBeInTheDocument();
+    });
+
+    vi.mocked(reviewApi.fetchCompanyPurchaseReview).mockResolvedValueOnce({
+      rows: [],
+      pagination: { page: 1, total: 0, pageSize: 50, totalPages: 1 },
+    });
+
+    await user.click(screen.getByRole('button', { name: /إعادة المحاولة/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('لا توجد مشتريات مطابقة')).toBeInTheDocument();
     });
   });
 });

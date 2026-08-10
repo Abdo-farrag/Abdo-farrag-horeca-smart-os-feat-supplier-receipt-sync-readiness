@@ -1,3 +1,21 @@
+import type {
+  CompanyId,
+  PurchaseDecisionStatus,
+  SupplierReadiness,
+  PurchaseExportScope,
+  CompanyPurchaseDecisionInput,
+  CompanyPurchaseRow,
+} from '@horeca/contracts';
+
+export type {
+  CompanyId,
+  PurchaseDecisionStatus,
+  SupplierReadiness,
+  PurchaseExportScope,
+  CompanyPurchaseDecisionInput,
+  CompanyPurchaseRow,
+};
+
 export type CompanyFilter = 'all' | '1' | '2';
 export type CoverageDays = 7 | 14 | 21 | 30;
 export type Priority = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
@@ -61,56 +79,19 @@ export interface OverviewFilters {
   page: number;
 }
 
-// ── Review / Approval types ──
+// ── Company Purchase Review types ──
 
-export type DecisionStatus = 'NEW' | 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED' | 'DEFERRED';
+export type DecisionStatus = PurchaseDecisionStatus;
 
-export interface ReviewApprovalData {
-  productCode: string;
-  productName: string;
-  freeQty: number;
-  effectiveDailyDemand: number;
-  forecastQty: number | null;
-  actualCoverageDays: number | null;
-  leadTimeDays: number;
-  safetyStockDays: number;
-  suggestedQty: number | null;
-  priority: Priority;
-  dataStatus: DataStatus;
-  supplierStatus: SupplierStatus;
-  proposedSupplierName: string | null;
-  existingApprovedSupplierName: string | null;
-  latestReceiptAt: string | null;
-  productVersion: number;
-  approvedQty: number | null;
-  reviewApprovedSupplierId: number | null;
-  reviewApprovedSupplierName: string | null;
-  decisionStatus: DecisionStatus | null;
-  buyerNote: string | null;
-  approvalVersion: number;
-}
-
-export interface ApprovalResult {
-  productCode: string;
-  approvedQty: number | null;
-  approvedSupplierId: number | null;
-  approvedSupplierName: string | null;
-  decisionStatus: string;
-  buyerNote: string | null;
-  version: number;
-  updatedAt: string | null;
-}
-
-export interface BulkUpdateResult {
-  batchId: string;
-  items: ApprovalResult[];
-}
-
-export interface ReviewFilters {
+export interface CompanyReviewFilters {
   company: CompanyFilter;
   search: string;
   priority: string;
   decisionStatus: string;
   noSupplier: boolean;
   page: number;
+}
+
+export function companyPurchaseRowKey(row: { companyId: number; productCode: string }): string {
+  return `${row.companyId}:${row.productCode}`;
 }

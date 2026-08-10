@@ -1,29 +1,11 @@
 import { apiFetch } from './client.js';
-import type { ApprovalResult, BulkUpdateResult } from '../types.js';
+import type {
+  CompanyPurchaseRow,
+  CompanyPurchaseDecisionInput,
+  PurchaseExportScope,
+} from '@horeca/contracts';
 
-export interface ApproveBody {
-  productCode: string;
-  decisionStatus: string;
-  approvedQty: number | null;
-  approvedSupplierId: number | null;
-  approvedSupplierName: string | null;
-  buyerNote: string | null;
-  expectedVersion: number;
-}
-
-export interface BulkBody {
-  items: Array<{
-    productCode: string;
-    approvedQty: number | null;
-    approvedSupplierId: number | null;
-    approvedSupplierName: string | null;
-    expectedVersion: number;
-  }>;
-  decisionStatus: string;
-  buyerNote: string | null;
-}
-
-export async function fetchReviewProducts(filters: {
+export interface CompanyReviewFiltersInput {
   company: string;
   search: string;
   priority: string;
@@ -31,7 +13,12 @@ export async function fetchReviewProducts(filters: {
   noSupplier: boolean;
   page: number;
   pageSize: number;
-}): Promise<{ rows: unknown[]; pagination: { page: number; total: number; pageSize: number; totalPages: number } }> {
+}
+
+export async function fetchCompanyPurchaseReview(filters: CompanyReviewFiltersInput): Promise<{
+  rows: CompanyPurchaseRow[];
+  pagination: { page: number; total: number; pageSize: number; totalPages: number };
+}> {
   const params = new URLSearchParams();
   params.set('company', filters.company);
   params.set('search', filters.search);
@@ -41,24 +28,89 @@ export async function fetchReviewProducts(filters: {
   params.set('page', String(filters.page));
   params.set('pageSize', String(filters.pageSize));
 
-  const result = await apiFetch<{ data: { rows: unknown[]; pagination: unknown } }>(
-    `/api/procurement/review?${params.toString()}`,
+  const result = await apiFetch<{
+    data: {
+      items: CompanyPurchaseRow[];
+      pagination: { page: number; total: number; pageSize: number; totalPages: number };
+    };
+  }>(`/api/procurement/company-review?${params.toString()}`);
+
+  return {
+    rows: result.data.items,
+    pagination: result.data.pagination,
+  };
+}
+
+export async function saveCompanyPurchaseDecision(
+  input: CompanyPurchaseDecisionInput,
+): Promise<CompanyPurchaseRow> {
+  const result = await apiFetch<{ data: CompanyPurchaseRow }>(
+    '/api/procurement/company-review/decision',
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
   );
-  return result.data as { rows: unknown[]; pagination: { page: number; total: number; pageSize: number; totalPages: number } };
-}
-
-export async function approveRecommendation(body: ApproveBody): Promise<ApprovalResult> {
-  const result = await apiFetch<{ data: ApprovalResult }>('/api/procurement/review/approve', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
   return result.data;
 }
 
-export async function bulkUpdateRecommendations(body: BulkBody): Promise<BulkUpdateResult> {
-  const result = await apiFetch<{ data: BulkUpdateResult }>('/api/procurement/review/bulk', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+export async function bulkSaveCompanyPurchaseDecisions(payload: {
+  items: CompanyPurchaseDecisionInput[];
+  decisionStatus: string;
+  buyerNote: string | null;
+}): Promise<{ batchId: string; items: CompanyPurchaseRow[] }> {
+  const result = await apiFetch<{ data: { batchId: string; items: CompanyPurchaseRow[] } }>(
+    '/api/procurement/company-review/bulk',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
   return result.data;
 }
+
+export async function downloadPurchaseExport(scope: PurchaseExportScope): Promise<void> {
+  const response = await fetch(
+    `/api/procurement/company-review/export?scope=${encodeURIComponent(scope)}`,
+    {
+      credentials: 'include',
+    },
+  );
+
+  if (!response.ok) {
+    let errorMsg = `فشل تصدير ملف ${scope === 'approved' ? 'المعتمد' : 'المسودة'}`;
+    try {
+      const errJson = await response.json();
+      if (errJson?.error?.message) {
+        errorMsg = errJson.error.message;
+      }
+    } catch {
+      // Ignore parse failure
+    }
+    throw new Error(errorMsg);
+  }
+
+  const disposition = response.headers.get('Content-Disposition');
+  let filename = `horeca-purchase-plan-${scope}.xlsx`;
+  if (disposition) {
+    const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+    if (filenameMatch && filenameMatch[1]) {
+      filename = filenameMatch[1];
+    }
+  }
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+// Aliases for compatibility
+export const fetchReviewProducts = fetchCompanyPurchaseReview as any;
+export const approveRecommendation = saveCompanyPurchaseDecision as any;
+export const bulkUpdateRecommendations = bulkSaveCompanyPurchaseDecisions as any;

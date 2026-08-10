@@ -31,6 +31,7 @@ export function AppRoutes() {
       <Route path="/login" element={<LoginPage />} />
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<ProcurementOverviewPage />} />
+        <Route path="/procurement" element={<ProcurementOverviewPage />} />
         <Route path="/procurement/review" element={<ProcurementReviewPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
