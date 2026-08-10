@@ -786,3 +786,163 @@ body {
 .review-message__close:hover {
   opacity: 1;
 }
+
+/* ── Company Review specific styles ── */
+.review-top-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.review-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  margin: 0 0 0.25rem 0;
+}
+
+.review-subtitle {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.review-export-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.company-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.company-badge--mas {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.company-badge--horeca {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.readiness-badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.readiness-badge--verified_receipt {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.readiness-badge--fallback_needs_review {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}
+
+.readiness-badge--needs_supplier {
+  background: var(--color-critical-bg);
+  color: var(--color-critical);
+}
+
+.ready-badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ready-badge--yes {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.ready-badge--no {
+  background: var(--color-low-bg);
+  color: var(--color-low);
+}
+
+/* ── Top-level Procurement Navigation ── */
+.overview-header__nav,
+.review-header__nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn--nav {
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 0.4rem 0.85rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn--nav:hover {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.btn--nav-active {
+  background: var(--color-primary);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.btn--nav-active:hover {
+  background: var(--color-primary-hover);
+  color: #ffffff;
+}
+
+.overview-action-bar {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.overview-action-bar__title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  margin: 0 0 0.25rem;
+}
+
+.overview-action-bar__subtitle {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin: 0;
+}

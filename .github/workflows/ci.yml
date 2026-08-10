@@ -54,6 +54,12 @@ jobs:
           version: 2.101.0
           github-token: ${{ github.token }}
 
+      - name: Install CI-only external procurement sources
+        run: |
+          cp \
+            .github/fixtures/ci_external_procurement_sources.sql \
+            supabase/migrations/20260724000000_ci_external_procurement_sources.sql
+
       - name: Start isolated PostgreSQL 17 database
         run: supabase db start
 

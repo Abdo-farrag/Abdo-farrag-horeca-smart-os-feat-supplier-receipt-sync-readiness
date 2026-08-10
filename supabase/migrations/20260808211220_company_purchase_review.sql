@@ -1,10 +1,11 @@
 begin;
 
--- ── Recommendation approval decisions ──
--- Each product recommendation gets one row, created lazily on first review action.
+-- ── Company purchase review decisions ──
+-- Independent purchase reviews for MAS (company_id=1) and Horeca Smart (company_id=2).
 
-create table public.procurement_recommendation_approvals (
-  product_code text primary key check (length(btrim(product_code)) between 1 and 120),
+create table public.procurement_company_purchase_reviews (
+  company_id bigint not null check (company_id in (1, 2)),
+  product_code text not null check (length(btrim(product_code)) between 1 and 120),
   approved_qty numeric null check (approved_qty is null or approved_qty >= 0),
   approved_supplier_id bigint null check (approved_supplier_id is null or approved_supplier_id > 0),
   approved_supplier_name text null,
@@ -15,16 +16,20 @@ create table public.procurement_recommendation_approvals (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   updated_by uuid null references auth.users(id) on delete set null,
-  constraint procurement_approvals_approved_pair_check check (
-    (decision_status = 'APPROVED' and approved_qty is not null)
+  primary key (company_id, product_code),
+  constraint procurement_company_purchase_reviews_approved_check check (
+    (decision_status = 'APPROVED' and approved_qty is not null and approved_qty > 0)
     or (decision_status <> 'APPROVED')
   )
 );
 
-comment on table public.procurement_recommendation_approvals is
-  'Procurement recommendation approval decisions, one per product. Optimistic concurrency via version.';
+comment on table public.procurement_company_purchase_reviews is
+  'Independent company procurement purchase reviews for MAS (company_id=1) and Horeca Smart (company_id=2).';
 
-create or replace function public.rpc_approve_recommendation(
+-- ── Atomic single-item review RPC ──
+
+create or replace function public.rpc_review_company_purchase(
+  p_company_id bigint,
   p_product_code text,
   p_decision_status text,
   p_approved_qty numeric,
@@ -41,13 +46,16 @@ security definer
 set search_path = public, pg_temp
 as $function$
 declare
-  v_old public.procurement_recommendation_approvals;
-  v_new public.procurement_recommendation_approvals;
+  v_old public.procurement_company_purchase_reviews;
+  v_new public.procurement_company_purchase_reviews;
   v_had_old boolean := false;
   v_actor public.app_user_roles;
 begin
   v_actor := public.procurement_require_actor(p_actor_user_id, 'reviewer');
 
+  if p_company_id is null or p_company_id not in (1, 2) then
+    raise exception 'INVALID_COMPANY_ID';
+  end if;
   if p_product_code is null or btrim(p_product_code) = '' then
     raise exception 'PRODUCT_CODE_REQUIRED';
   end if;
@@ -64,14 +72,14 @@ begin
     raise exception 'BUYER_NOTE_TOO_LONG';
   end if;
 
-  if p_decision_status = 'APPROVED' and (p_approved_qty is null or p_approved_qty < 0) then
+  if p_decision_status = 'APPROVED' and (p_approved_qty is null or p_approved_qty <= 0) then
     raise exception 'APPROVED_QTY_REQUIRED';
   end if;
 
   select *
   into v_old
-  from public.procurement_recommendation_approvals r
-  where r.product_code = btrim(p_product_code)
+  from public.procurement_company_purchase_reviews r
+  where r.company_id = p_company_id and r.product_code = btrim(p_product_code)
   for update;
   v_had_old := found;
 
@@ -82,7 +90,8 @@ begin
     raise exception 'VERSION_CONFLICT' using errcode = '40001';
   end if;
 
-  insert into public.procurement_recommendation_approvals (
+  insert into public.procurement_company_purchase_reviews (
+    company_id,
     product_code,
     approved_qty,
     approved_supplier_id,
@@ -93,6 +102,7 @@ begin
     updated_at,
     updated_by
   ) values (
+    p_company_id,
     btrim(p_product_code),
     p_approved_qty,
     p_approved_supplier_id,
@@ -103,7 +113,7 @@ begin
     now(),
     p_actor_user_id
   )
-  on conflict (product_code) do update set
+  on conflict (company_id, product_code) do update set
     approved_qty = excluded.approved_qty,
     approved_supplier_id = excluded.approved_supplier_id,
     approved_supplier_name = excluded.approved_supplier_name,
@@ -127,10 +137,10 @@ begin
     note,
     request_id
   ) values (
-    'RECOMMENDATION_' || v_new.decision_status,
+    'COMPANY_PURCHASE_' || v_new.decision_status,
     'RECOMMENDATION_REVIEW',
-    'PRODUCT',
-    v_new.product_code,
+    'COMPANY_PURCHASE',
+    v_new.company_id || ':' || v_new.product_code,
     v_actor.user_id,
     v_actor.display_name,
     v_actor.role,
@@ -141,6 +151,7 @@ begin
   );
 
   return jsonb_build_object(
+    'companyId', v_new.company_id,
     'productCode', v_new.product_code,
     'approvedQty', v_new.approved_qty,
     'approvedSupplierId', v_new.approved_supplier_id,
@@ -153,9 +164,9 @@ begin
 end;
 $function$;
 
--- ── Bulk update recommendations ──
+-- ── Atomic bulk review RPC ──
 
-create or replace function public.rpc_bulk_update_recommendations(
+create or replace function public.rpc_bulk_review_company_purchases(
   p_items jsonb,
   p_decision_status text,
   p_buyer_note text,
@@ -187,18 +198,11 @@ begin
      or jsonb_array_length(p_items) > 200 then
     raise exception 'INVALID_BULK_ITEMS';
   end if;
-  if exists (
-    select 1
-    from jsonb_array_elements(p_items) item
-    group by item ->> 'productCode'
-    having count(*) > 1
-  ) then
-    raise exception 'DUPLICATE_PRODUCT_CODE';
-  end if;
 
   for v_item in select value from jsonb_array_elements(p_items)
   loop
-    v_result := public.rpc_approve_recommendation(
+    v_result := public.rpc_review_company_purchase(
+      (v_item ->> 'companyId')::bigint,
       v_item ->> 'productCode',
       p_decision_status,
       (v_item ->> 'approvedQty')::numeric,
@@ -219,65 +223,107 @@ begin
 end;
 $function$;
 
--- Create a view that joins recommendations with approval decisions
-create or replace view public.v_recommendation_approvals as
+-- ── Company purchase review projection view ──
+
+create or replace view public.api_company_purchase_review
+with (security_invoker = true)
+as
+with latest_external_receipts as (
+  select distinct on (r.company_id, r.product_code)
+    r.company_id,
+    r.product_code,
+    r.supplier_id,
+    r.supplier_name,
+    r.received_at,
+    r.unit_cost
+  from public.procurement_supplier_receipts r
+  where r.received_qty > 0
+    and r.supplier_id not in (1, 2)
+    and upper(btrim(r.supplier_name)) not in ('MAS', 'HORECA SMART', 'HORECA', 'HORECA SMART OS')
+  order by
+    r.company_id,
+    r.product_code,
+    r.received_at desc,
+    r.received_qty desc,
+    r.id desc
+)
 select
-  o.product_code,
-  o.product_name,
-  o.free_qty,
-  o.effective_daily_demand,
-  o.forecast_qty,
-  o.lead_time_qty,
-  o.safety_stock_qty,
-  o.actual_coverage_days,
-  o.lead_time_days,
-  o.safety_stock_days,
-  o.suggested_qty,
-  o.priority,
-  o.data_status,
-  o.supplier_status,
-  o.proposed_supplier_id,
-  o.proposed_supplier_name,
-  o.approved_supplier_id as existing_approved_supplier_id,
-  o.approved_supplier_name as existing_approved_supplier_name,
-  o.latest_receipt_at,
-  o.version as product_version,
-  a.approved_qty,
-  a.approved_supplier_id as review_approved_supplier_id,
-  a.approved_supplier_name as review_approved_supplier_name,
-  a.decision_status,
-  a.buyer_note,
-  a.updated_at as review_updated_at,
-  a.updated_by as review_updated_by,
-  coalesce(a.version, 0) as approval_version
-from public.v_procurement_recommendation_configurable o
-left join public.procurement_recommendation_approvals a
-  on a.product_code = o.product_code;
+  s.company_id,
+  s.company_name,
+  s.product_code,
+  s.product_name,
+  c.priority,
+  s.free_qty,
+  s.effective_daily_demand,
+  c.actual_coverage_days as coverage_days,
+  14::numeric as target_coverage_days,
+  c.suggested_qty,
+  r.approved_qty,
+  coalesce(r.approved_supplier_id, er.supplier_id, sr.approved_supplier_id) as supplier_id,
+  coalesce(r.approved_supplier_name, er.supplier_name, sr.approved_supplier_name) as supplier_name,
+  case
+    when er.supplier_id is not null then 'VERIFIED_RECEIPT'
+    when r.approved_supplier_id is not null or sr.approved_supplier_id is not null then 'FALLBACK_NEEDS_REVIEW'
+    else 'NEEDS_SUPPLIER'
+  end as supplier_readiness,
+  er.received_at as latest_receipt_at,
+  er.unit_cost as latest_unit_cost,
+  case
+    when er.unit_cost is not null then round(coalesce(r.approved_qty, c.suggested_qty, 0) * er.unit_cost, 2)
+    else null
+  end as estimated_value,
+  coalesce(r.decision_status, 'NEW') as decision_status,
+  r.buyer_note,
+  coalesce(r.version, 0) as version,
+  r.updated_at::text as source_updated_at,
+  (
+    coalesce(r.decision_status, 'NEW') = 'APPROVED'
+    and coalesce(r.approved_qty, 0) > 0
+    and coalesce(r.approved_supplier_id, er.supplier_id, sr.approved_supplier_id) is not null
+  ) as ready_for_po
+from public.api_procurement_company_source s
+cross join lateral public.procurement_calculate_recommendation(
+  s.effective_daily_demand,
+  s.free_qty,
+  14,
+  s.lead_time_days,
+  s.safety_stock_days,
+  s.order_multiple,
+  s.data_status
+) c
+left join public.procurement_company_purchase_reviews r
+  on r.company_id = s.company_id
+ and r.product_code = s.product_code
+left join latest_external_receipts er
+  on er.company_id = s.company_id
+ and er.product_code = s.product_code
+left join public.procurement_supplier_reviews sr
+  on sr.product_code = s.product_code;
 
--- ── RLS: revoke all from public/anonymous, grant only to service_role ──
+-- ── Security & RLS ──
 
-alter table public.procurement_recommendation_approvals enable row level security;
+alter table public.procurement_company_purchase_reviews enable row level security;
 
-revoke all on table public.procurement_recommendation_approvals
+revoke all on table public.procurement_company_purchase_reviews
   from public, anon, authenticated;
-revoke all on function public.rpc_approve_recommendation(
-  text, text, numeric, bigint, text, text, bigint, uuid, text
+revoke all on function public.rpc_review_company_purchase(
+  bigint, text, text, numeric, bigint, text, text, bigint, uuid, text
 ) from public, anon, authenticated;
-revoke all on function public.rpc_bulk_update_recommendations(
+revoke all on function public.rpc_bulk_review_company_purchases(
   jsonb, text, text, uuid, text
 ) from public, anon, authenticated;
-revoke all on table public.v_recommendation_approvals
+revoke all on table public.api_company_purchase_review
   from public, anon, authenticated;
 
-grant select, insert, update, delete on table public.procurement_recommendation_approvals
+grant select, insert, update, delete on table public.procurement_company_purchase_reviews
   to service_role;
-grant execute on function public.rpc_approve_recommendation(
-  text, text, numeric, bigint, text, text, bigint, uuid, text
+grant execute on function public.rpc_review_company_purchase(
+  bigint, text, text, numeric, bigint, text, text, bigint, uuid, text
 ) to service_role;
-grant execute on function public.rpc_bulk_update_recommendations(
+grant execute on function public.rpc_bulk_review_company_purchases(
   jsonb, text, text, uuid, text
 ) to service_role;
-grant select on table public.v_recommendation_approvals
+grant select on table public.api_company_purchase_review
   to service_role;
 
 commit;

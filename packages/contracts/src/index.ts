@@ -6,3 +6,4 @@ export * from './suppliers.js';
 export * from './settings.js';
 export * from './audit.js';
 export * from './users.js';
+export * from './company-purchase.js';

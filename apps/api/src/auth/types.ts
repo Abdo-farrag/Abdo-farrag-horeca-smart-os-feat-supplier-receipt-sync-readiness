@@ -1,3 +1,8 @@
+import type {
+  CompanyPurchaseDecisionInput,
+  CompanyPurchaseRow,
+} from '@horeca/contracts';
+
 export type AppRole = 'reviewer' | 'admin';
 
 export interface VerifiedAccessToken {
@@ -93,8 +98,58 @@ export interface ReviewDependencies {
   ) => Promise<BulkUpdateResult>;
 }
 
+export interface CompanyPurchaseListParams {
+  company: 'all' | '1' | '2';
+  search?: string;
+  priority?: string;
+  decisionStatus?: string;
+  noSupplier?: boolean;
+  page: number;
+  pageSize: number;
+}
+
+export interface CompanyPurchaseDecisionResult {
+  companyId: number;
+  productCode: string;
+  approvedQty: number | null;
+  approvedSupplierId: number | null;
+  approvedSupplierName: string | null;
+  decisionStatus: string;
+  buyerNote: string | null;
+  version: number;
+  updatedAt: string | null;
+}
+
+export interface CompanyPurchaseBulkResult {
+  batchId: string;
+  items: CompanyPurchaseDecisionResult[];
+}
+
+export interface CompanyPurchaseDependencies {
+  list: (params: CompanyPurchaseListParams) => Promise<{
+    data: {
+      items: CompanyPurchaseRow[];
+      pagination: {
+        page: number;
+        pageSize: number;
+        total: number;
+        totalPages: number;
+      };
+    };
+    error: null;
+  }>;
+  saveDecision: (input: CompanyPurchaseDecisionInput) => Promise<CompanyPurchaseDecisionResult>;
+  bulkSave: (input: {
+    items: CompanyPurchaseDecisionInput[];
+    decisionStatus: string;
+    buyerNote?: string | null;
+  }) => Promise<CompanyPurchaseBulkResult>;
+  exportRows?: (query: { companyId?: number; scope: 'draft' | 'approved' }) => Promise<CompanyPurchaseRow[]>;
+}
+
 export interface BuildAppOptions {
   auth?: AuthDependencies;
   procurement?: ProcurementDependencies;
   review?: ReviewDependencies;
+  companyPurchase?: CompanyPurchaseDependencies;
 }

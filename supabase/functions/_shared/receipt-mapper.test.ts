@@ -173,23 +173,26 @@ Deno.test("picking type code classification rules", () => {
 
   // picking_type_code internal is rejected
   assertThrows(
-    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "", picking_type_code: "internal" }),
+    () =>
+      mapOdooReceiptLine({ ...completedReceipt, picking_code: "", picking_type_code: "internal" }),
     REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
   );
 
   // picking_type_code outgoing is rejected
   assertThrows(
-    () => mapOdooReceiptLine({ ...completedReceipt, picking_code: "", picking_type_code: "outgoing" }),
+    () =>
+      mapOdooReceiptLine({ ...completedReceipt, picking_code: "", picking_type_code: "outgoing" }),
     REJECTION_REASONS.NON_INCOMING_PICKING,
   );
 
   // /INT/ name rejected even if another inconsistent field says incoming
   assertThrows(
-    () => mapOdooReceiptLine({
-      ...completedReceipt,
-      picking_id: [88, "WH/INT/00088"],
-      picking_code: "incoming",
-    }),
+    () =>
+      mapOdooReceiptLine({
+        ...completedReceipt,
+        picking_id: [88, "WH/INT/00088"],
+        picking_code: "incoming",
+      }),
     REJECTION_REASONS.INTERNAL_TRANSFER_EXCLUDED,
   );
 });

@@ -11,6 +11,8 @@ import {
   verifyOverviewSession,
 } from './auth/service.js';
 import type { BuildAppOptions, ProcurementOverviewParams } from './auth/types.js';
+import { CompanyPurchaseDecisionInputSchema, CompanyPurchaseExportQuerySchema } from '@horeca/contracts';
+import { buildPurchaseWorkbook } from './purchase-export.js';
 
 interface LoginBody {
   password?: string;
@@ -301,6 +303,179 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         },
       );
     }
+
+    if (options.companyPurchase) {
+      const cp = options.companyPurchase;
+
+      // GET /api/procurement/company-review
+      app.get<{ Querystring: ReviewQuerystring }>(
+        '/api/procurement/company-review',
+        async (request, reply) => {
+          if (!hasOverviewAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+
+          const q = request.query;
+          const companyStr = q.company ?? 'all';
+          const company = companyStr === '1' ? '1' : companyStr === '2' ? '2' : 'all';
+          const page = Math.max(1, Number(q.page ?? '1') || 1);
+          const pageSize = Math.min(200, Math.max(1, Number(q.pageSize ?? '50') || 50));
+
+          try {
+            const result = await cp.list({
+              company,
+              search: q.search ?? '',
+              priority: q.priority ?? 'all',
+              decisionStatus: q.decisionStatus ?? 'all',
+              noSupplier: q.noSupplier === 'true',
+              page,
+              pageSize,
+            });
+            return reply.code(200).send(result);
+          } catch {
+            return reply.code(503).send({ data: null, error: { code: 'COMPANY_REVIEW_UNAVAILABLE' } });
+          }
+        },
+      );
+
+      // POST /api/procurement/company-review/decision
+      app.post(
+        '/api/procurement/company-review/decision',
+        async (request, reply) => {
+          if (!hasOverviewAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+
+          const parseResult = CompanyPurchaseDecisionInputSchema.safeParse(request.body);
+          if (!parseResult.success) {
+            return reply.code(400).send({
+              data: null,
+              error: {
+                code: 'VALIDATION_ERROR',
+                message: parseResult.error.issues[0]?.message ?? 'Invalid request body',
+              },
+            });
+          }
+
+          try {
+            const result = await cp.saveDecision(parseResult.data);
+            return reply.code(200).send({ data: result, error: null });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+            if (message.includes('VERSION_CONFLICT')) {
+              return reply.code(409).send({ data: null, error: { code: 'VERSION_CONFLICT', message } });
+            }
+            return reply.code(400).send({ data: null, error: { code: 'DECISION_FAILED', message } });
+          }
+        },
+      );
+
+      // POST /api/procurement/company-review/bulk
+      app.post(
+        '/api/procurement/company-review/bulk',
+        async (request, reply) => {
+          if (!hasOverviewAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+
+          const body = request.body as any;
+          if (!body || !Array.isArray(body.items) || body.items.length === 0) {
+            return reply.code(400).send({
+              data: null,
+              error: { code: 'VALIDATION_ERROR', message: 'Items array cannot be empty' },
+            });
+          }
+
+          const validatedItems = [];
+          for (const rawItem of body.items) {
+            const fullItem = {
+              ...rawItem,
+              decisionStatus: body.decisionStatus,
+              buyerNote: rawItem.buyerNote ?? body.buyerNote,
+            };
+            const itemResult = CompanyPurchaseDecisionInputSchema.safeParse(fullItem);
+            if (!itemResult.success) {
+              return reply.code(400).send({
+                data: null,
+                error: {
+                  code: 'VALIDATION_ERROR',
+                  message: itemResult.error.issues[0]?.message ?? 'Invalid item in bulk review',
+                },
+              });
+            }
+            validatedItems.push(itemResult.data);
+          }
+
+          try {
+            const result = await cp.bulkSave({
+              items: validatedItems,
+              decisionStatus: body.decisionStatus,
+              buyerNote: body.buyerNote ?? null,
+            });
+            return reply.code(200).send({ data: result, error: null });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+            if (message.includes('VERSION_CONFLICT')) {
+              return reply.code(409).send({ data: null, error: { code: 'VERSION_CONFLICT', message } });
+            }
+            return reply.code(400).send({ data: null, error: { code: 'BULK_DECISION_FAILED', message } });
+          }
+        },
+      );
+
+      // GET /api/procurement/company-review/export
+      app.get<{ Querystring: { scope?: string; companyId?: string } }>(
+        '/api/procurement/company-review/export',
+        async (request, reply) => {
+          if (!hasOverviewAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+
+          const parseResult = CompanyPurchaseExportQuerySchema.safeParse(request.query);
+          if (!parseResult.success) {
+            return reply.code(400).send({
+              data: null,
+              error: {
+                code: 'VALIDATION_ERROR',
+                message: parseResult.error.issues[0]?.message ?? 'Invalid export parameters',
+              },
+            });
+          }
+
+          const { scope, companyId } = parseResult.data;
+
+          try {
+            const exportQuery = companyId ? { scope, companyId } : { scope };
+            const rows = cp.exportRows
+              ? await cp.exportRows(exportQuery)
+              : (await cp.list({ company: companyId ? String(companyId) as '1' | '2' : 'all', page: 1, pageSize: 200 })).data.items;
+
+            const generatedAt = new Date().toISOString();
+            const workbookBuffer = await buildPurchaseWorkbook(rows, scope, generatedAt);
+
+            const dateStr = generatedAt.split('T')[0];
+            const filename = `horeca-purchase-plan-${scope}-${dateStr}.xlsx`;
+
+            return reply
+              .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+              .header('Content-Disposition', `attachment; filename="${filename}"`)
+              .send(workbookBuffer);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '';
+            if (message.includes('Supabase export error') || message.includes('view error') || message.includes('connection failed')) {
+              return reply.code(503).send({
+                data: null,
+                error: { code: 'COMPANY_REVIEW_UNAVAILABLE', message: 'Database view unavailable' },
+              });
+            }
+            return reply.code(500).send({
+              data: null,
+              error: { code: 'EXPORT_GENERATION_FAILED', message: 'Failed to generate export workbook' },
+            });
+          }
+        },
+      );
+    }
   }
 
   const candidatePaths = [
@@ -316,14 +491,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: '/',
       wildcard: false,
     });
-
-    app.setNotFoundHandler((request, reply) => {
-      if (request.raw.url?.startsWith('/api')) {
-        return reply.code(404).send({ data: null, error: { code: 'NOT_FOUND' } });
-      }
-      return reply.sendFile('index.html');
-    });
   }
+
+  app.setNotFoundHandler((request, reply) => {
+    const rawUrl = request.raw.url || request.url || '';
+    if (rawUrl.startsWith('/api') || rawUrl.includes('/api/')) {
+      return reply.code(404).type('application/json; charset=utf-8').send({ data: null, error: { code: 'NOT_FOUND' } });
+    }
+    if (webDistPath) {
+      return reply.sendFile('index.html');
+    }
+    return reply.code(404).type('application/json; charset=utf-8').send({ data: null, error: { code: 'NOT_FOUND' } });
+  });
 
   return app;
 }

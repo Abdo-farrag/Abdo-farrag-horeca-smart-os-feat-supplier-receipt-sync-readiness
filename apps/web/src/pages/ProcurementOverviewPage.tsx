@@ -47,17 +47,47 @@ export function ProcurementOverviewPage() {
           <h1 className="overview-header__title">Horeca Smart OS</h1>
           <span className="overview-header__subtitle">نظرة عامة على المشتريات</span>
         </div>
-        <button
-          className="btn btn--ghost"
-          onClick={() => logoutMutation.mutate()}
-          disabled={logoutMutation.isPending}
-          aria-label="تسجيل الخروج"
-        >
-          {logoutMutation.isPending ? '...' : 'تسجيل الخروج'}
-        </button>
+        <nav className="overview-header__nav">
+          <button
+            className="btn--nav btn--nav-active"
+            onClick={() => navigate('/')}
+            aria-current="page"
+          >
+            نظرة عامة
+          </button>
+          <button
+            className="btn--nav"
+            onClick={() => navigate('/procurement/review')}
+          >
+            مراجعة واعتماد المشتريات
+          </button>
+          <button
+            className="btn btn--ghost"
+            onClick={() => logoutMutation.mutate()}
+            disabled={logoutMutation.isPending}
+            aria-label="تسجيل الخروج"
+          >
+            {logoutMutation.isPending ? '...' : 'تسجيل الخروج'}
+          </button>
+        </nav>
       </header>
 
       <main className="overview-main">
+        <div className="overview-action-bar">
+          <div className="overview-action-bar__info">
+            <h2 className="overview-action-bar__title">مراجعة مشتريات الشركات</h2>
+            <p className="overview-action-bar__subtitle">
+              استعراض واعتماد خطة المشتريات المستقلة لـ MAS و Horeca Smart وتصدير تقارير Excel.
+            </p>
+          </div>
+          <button
+            className="btn btn--primary"
+            onClick={() => navigate('/procurement/review')}
+          >
+            مراجعة واعتماد المشتريات
+          </button>
+        </div>
+
         <Filters
           company={company}
           coverageDays={coverageDays}

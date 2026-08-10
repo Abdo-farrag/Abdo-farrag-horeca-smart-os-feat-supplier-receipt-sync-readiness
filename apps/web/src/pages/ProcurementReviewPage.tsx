@@ -2,8 +2,20 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { logout } from '../api/auth.js';
-import { useReviewProducts, useApproveRecommendation, useBulkUpdateRecommendations } from '../hooks/useReview.js';
-import type { CompanyFilter, DecisionStatus } from '../types.js';
+import {
+  useCompanyPurchaseReview,
+  useSaveCompanyDecision,
+  useBulkSaveCompanyDecisions,
+} from '../hooks/useReview.js';
+import { downloadPurchaseExport } from '../api/review.js';
+import {
+  companyPurchaseRowKey,
+  type CompanyFilter,
+  type DecisionStatus,
+  type CompanyPurchaseRow,
+  type SupplierReadiness,
+  type PurchaseExportScope,
+} from '../types.js';
 
 const PRIORITY_LABELS: Record<string, string> = {
   CRITICAL: 'حرج',
@@ -12,12 +24,7 @@ const PRIORITY_LABELS: Record<string, string> = {
   LOW: 'منخفض',
 };
 
-const DATA_STATUS_LABELS: Record<string, string> = {
-  SUFFICIENT: 'كافية',
-  INSUFFICIENT: 'غير كافية',
-};
-
-const DECISION_STATUS_LABELS: Record<string, string> = {
+const DECISION_STATUS_LABELS: Record<DecisionStatus, string> = {
   NEW: 'جديد',
   UNDER_REVIEW: 'قيد المراجعة',
   APPROVED: 'معتمد',
@@ -25,7 +32,19 @@ const DECISION_STATUS_LABELS: Record<string, string> = {
   DEFERRED: 'مؤجل',
 };
 
-const DECISION_OPTIONS: DecisionStatus[] = ['NEW', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'DEFERRED'];
+const SUPPLIER_READINESS_LABELS: Record<SupplierReadiness, string> = {
+  VERIFIED_RECEIPT: 'مورد موثّق من استلام فعلي',
+  FALLBACK_NEEDS_REVIEW: 'المورد الأساسي — يحتاج مراجعة',
+  NEEDS_SUPPLIER: 'يحتاج تحديد مورد',
+};
+
+const DECISION_OPTIONS: DecisionStatus[] = [
+  'NEW',
+  'UNDER_REVIEW',
+  'APPROVED',
+  'REJECTED',
+  'DEFERRED',
+];
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
@@ -41,29 +60,16 @@ function formatQty(n: number | null | undefined): string {
   return n.toLocaleString('ar-SA', { maximumFractionDigits: 2 });
 }
 
-interface EditableRow {
-  productCode: string;
-  productName: string;
-  priority: string;
-  dataStatus: string;
-  supplierStatus: string;
-  freeQty: number;
-  effectiveDailyDemand: number;
-  forecastQty: number | null;
-  actualCoverageDays: number | null;
-  suggestedQty: number | null;
-  proposedSupplierName: string | null;
-  latestReceiptAt: string | null;
-  productVersion: number;
-  // Editable fields
+function formatCurrency(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—';
+  return n.toLocaleString('ar-SA', { style: 'currency', currency: 'SAR', maximumFractionDigits: 2 });
+}
+
+interface RowEditState {
   approvedQty: number | null;
-  reviewApprovedSupplierId: number | null;
-  reviewApprovedSupplierName: string | null;
-  decisionStatus: DecisionStatus | null;
+  approvedSupplierName: string | null;
+  decisionStatus: DecisionStatus;
   buyerNote: string | null;
-  approvalVersion: number;
-  selected: boolean;
-  isDirty: boolean;
 }
 
 export function ProcurementReviewPage() {
@@ -79,11 +85,18 @@ export function ProcurementReviewPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [page, setPage] = useState(1);
 
-  const approveMutation = useApproveRecommendation();
-  const bulkMutation = useBulkUpdateRecommendations();
+  const saveDecisionMutation = useSaveCompanyDecision();
+  const bulkMutation = useBulkSaveCompanyDecisions();
 
   const [bulkDecisionStatus, setBulkDecisionStatus] = useState<DecisionStatus>('UNDER_REVIEW');
   const [bulkBuyerNote, setBulkBuyerNote] = useState('');
+
+  // Export state
+  const [exportingScope, setExportingScope] = useState<PurchaseExportScope | null>(null);
+
+  // Messages
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Debounce search
   useEffect(() => {
@@ -96,151 +109,178 @@ export function ProcurementReviewPage() {
   }, [company, priority, decisionStatus, noSupplier, debouncedSearch]);
 
   const filters = { company, priority, decisionStatus, noSupplier, search: debouncedSearch, page };
-  const { data, isPending, isError, error } = useReviewProducts(filters);
+  const { data, isPending, isError, error, refetch } = useCompanyPurchaseReview(filters);
 
-  // Transform rows to editable rows with selection
-  const rows: EditableRow[] = ((data?.rows ?? []) as Record<string, unknown>[]).map((r) => ({
-    productCode: r.productCode as string,
-    productName: r.productName as string,
-    priority: r.priority as string,
-    dataStatus: r.dataStatus as string,
-    supplierStatus: r.supplierStatus as string,
-    freeQty: Number(r.freeQty ?? 0),
-    effectiveDailyDemand: Number(r.effectiveDailyDemand ?? 0),
-    forecastQty: r.forecastQty as number | null,
-    actualCoverageDays: r.actualCoverageDays as number | null,
-    suggestedQty: r.suggestedQty as number | null,
-    proposedSupplierName: r.proposedSupplierName as string | null,
-    latestReceiptAt: r.latestReceiptAt as string | null,
-    productVersion: Number(r.productVersion ?? 0),
-    approvedQty: r.approvedQty as number | null,
-    reviewApprovedSupplierId: r.reviewApprovedSupplierId as number | null,
-    reviewApprovedSupplierName: r.reviewApprovedSupplierName as string | null,
-    decisionStatus: (r.decisionStatus as DecisionStatus) ?? null,
-    buyerNote: r.buyerNote as string | null,
-    approvalVersion: Number(r.approvalVersion ?? 0),
-    selected: false,
-    isDirty: false,
-  }));
-
+  const rows = data?.rows ?? [];
   const pagination = data?.pagination ?? { page: 1, total: 0, pageSize: 50, totalPages: 1 };
 
-  // Local state for row edits (stored by productCode)
-  const [edits, setEdits] = useState<Record<string, {
-    approvedQty: number | null;
-    approvedSupplierName: string | null;
-    decisionStatus: DecisionStatus;
-    buyerNote: string | null;
-  }>>({});
+  // Edits state keyed by `${companyId}:${productCode}`
+  const [edits, setEdits] = useState<Record<string, RowEditState>>({});
 
-  const [savingProduct, setSavingProduct] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  // Saving row key
+  const [savingRowKey, setSavingRowKey] = useState<string | null>(null);
 
-  // Select all
-  const [selectAll, setSelectAll] = useState(false);
+  // Selected rows by rowKey
   const [selectedSet, setSelectedSet] = useState<Set<string>>(new Set());
 
   const toggleSelectAll = useCallback(() => {
-    if (selectAll) {
-      setSelectedSet(new Set());
-      setSelectAll(false);
-    } else {
-      setSelectedSet(new Set(rows.map((r) => r.productCode)));
-      setSelectAll(true);
-    }
-  }, [selectAll, rows]);
+    setSelectedSet((prev) => {
+      const allRowKeys = rows.map(companyPurchaseRowKey);
+      if (allRowKeys.length > 0 && prev.size === allRowKeys.length) {
+        return new Set();
+      }
+      return new Set(allRowKeys);
+    });
+  }, [rows]);
 
-  const toggleSelect = useCallback((productCode: string) => {
+  const toggleSelect = useCallback((key: string) => {
     setSelectedSet((prev) => {
       const next = new Set(prev);
-      if (next.has(productCode)) {
-        next.delete(productCode);
+      if (next.has(key)) {
+        next.delete(key);
       } else {
-        next.add(productCode);
+        next.add(key);
       }
       return next;
     });
   }, []);
 
-  // Update selectAll when selection changes
-  useEffect(() => {
-    if (rows.length > 0 && selectedSet.size === rows.length) {
-      setSelectAll(true);
-    } else {
-      setSelectAll(false);
+  const allSelected = rows.length > 0 && selectedSet.size === rows.length;
+  const selectedRows = rows.filter((r) => selectedSet.has(companyPurchaseRowKey(r)));
+
+  const getEdit = (row: CompanyPurchaseRow): RowEditState => {
+    const key = companyPurchaseRowKey(row);
+    return (
+      edits[key] ?? {
+        approvedQty: row.approvedQty,
+        approvedSupplierName: row.supplierName,
+        decisionStatus: row.decisionStatus ?? 'NEW',
+        buyerNote: row.buyerNote,
+      }
+    );
+  };
+
+  const updateEdit = (row: CompanyPurchaseRow, field: keyof RowEditState, value: unknown) => {
+    const key = companyPurchaseRowKey(row);
+    setEdits((prev) => {
+      const current = prev[key] ?? {
+        approvedQty: row.approvedQty,
+        approvedSupplierName: row.supplierName,
+        decisionStatus: row.decisionStatus ?? 'NEW',
+        buyerNote: row.buyerNote,
+      };
+      return {
+        ...prev,
+        [key]: {
+          ...current,
+          [field]: value,
+        },
+      };
+    });
+  };
+
+  const handleSaveRow = async (row: CompanyPurchaseRow) => {
+    const key = companyPurchaseRowKey(row);
+    const edit = getEdit(row);
+
+    // Client-side decision validation: APPROVED requires qty > 0
+    if (edit.decisionStatus === 'APPROVED') {
+      if (edit.approvedQty === null || edit.approvedQty === undefined || edit.approvedQty <= 0) {
+        setErrorMessage('حالة معتمد تتطلب كمية معتمدة أكبر من صفر');
+        return;
+      }
     }
-  }, [selectedSet, rows]);
 
-  const selectedProducts = rows.filter((r) => selectedSet.has(r.productCode));
-
-  const handleSaveRow = async (row: EditableRow) => {
-    const edit = edits[row.productCode];
-    if (!edit) return;
-
-    setSavingProduct(row.productCode);
+    setSavingRowKey(key);
     setErrorMessage(null);
     setSuccessMessage(null);
 
     try {
-      await approveMutation.mutateAsync({
+      await saveDecisionMutation.mutateAsync({
+        companyId: row.companyId,
         productCode: row.productCode,
         decisionStatus: edit.decisionStatus,
         approvedQty: edit.approvedQty,
-        approvedSupplierId: null,
-        approvedSupplierName: edit.approvedSupplierName ?? null,
+        approvedSupplierId: row.supplierId ?? null,
+        approvedSupplierName: edit.approvedSupplierName ?? row.supplierName ?? null,
         buyerNote: edit.buyerNote ?? null,
-        expectedVersion: row.approvalVersion,
+        expectedVersion: row.version,
       });
-      setSuccessMessage(`تم حفظ ${row.productCode}`);
-      // Clear edits for this row
+
+      setSuccessMessage(`تم حفظ القرار لـ ${row.companyName} (${row.productCode})`);
       setEdits((prev) => {
         const next = { ...prev };
-        delete next[row.productCode];
+        delete next[key];
         return next;
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'فشل الحفظ';
       if (msg.includes('VERSION_CONFLICT')) {
-        setErrorMessage(`تعارض الإصدار للمنتج ${row.productCode}. يرجى إعادة تحميل الصفحة.`);
+        setErrorMessage(
+          'تعارض في الإصدار للمنتج. تم تعديل البيانات بواسطة شخص آخر, يرجى إعادة التحميل.',
+        );
       } else {
         setErrorMessage(msg);
       }
     } finally {
-      setSavingProduct(null);
+      setSavingRowKey(null);
     }
   };
 
   const handleBulkUpdate = async () => {
-    if (selectedProducts.length === 0) return;
+    if (selectedRows.length === 0) return;
 
     setErrorMessage(null);
     setSuccessMessage(null);
 
     try {
       await bulkMutation.mutateAsync({
-        items: selectedProducts.map((r) => ({
-          productCode: r.productCode,
-          approvedQty: edits[r.productCode]?.approvedQty ?? r.approvedQty,
-          approvedSupplierId: null,
-          approvedSupplierName: edits[r.productCode]?.approvedSupplierName ?? r.reviewApprovedSupplierName,
-          expectedVersion: r.approvalVersion,
-        })),
+        items: selectedRows.map((r) => {
+          const edit = getEdit(r);
+          return {
+            companyId: r.companyId,
+            productCode: r.productCode,
+            decisionStatus: bulkDecisionStatus,
+            approvedQty: edit.approvedQty,
+            approvedSupplierId: r.supplierId ?? null,
+            approvedSupplierName: edit.approvedSupplierName ?? r.supplierName ?? null,
+            buyerNote: bulkBuyerNote || edit.buyerNote || null,
+            expectedVersion: r.version,
+          };
+        }),
         decisionStatus: bulkDecisionStatus,
         buyerNote: bulkBuyerNote || null,
       });
-      setSuccessMessage(`تم تحديث ${selectedProducts.length} منتج بنجاح`);
+
+      setSuccessMessage(`تم تحديث ${selectedRows.length} عنصر بنجاح`);
       setSelectedSet(new Set());
       setBulkBuyerNote('');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'فشل التحديث الجماعي';
-      setErrorMessage(msg);
+      if (msg.includes('VERSION_CONFLICT')) {
+        setErrorMessage(
+          'تعارض في الإصدار للمنتج. تم تعديل البيانات بواسطة شخص آخر, يرجى إعادة التحميل.',
+        );
+      } else {
+        setErrorMessage(msg);
+      }
     }
   };
 
-  const handlePageChange = useCallback((newPage: number) => setPage(newPage), []);
+  const handleExport = async (scope: PurchaseExportScope) => {
+    setExportingScope(scope);
+    setErrorMessage(null);
 
-  // Logout
+    try {
+      await downloadPurchaseExport(scope);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'فشل التصدير';
+      setErrorMessage(msg);
+    } finally {
+      setExportingScope(null);
+    }
+  };
+
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: async () => {
@@ -249,45 +289,23 @@ export function ProcurementReviewPage() {
     },
   });
 
-  // Get edit values for a row (from local edits or original data)
-  function getEdit(row: EditableRow) {
-    return edits[row.productCode] ?? {
-      approvedQty: row.approvedQty,
-      approvedSupplierName: row.reviewApprovedSupplierName,
-      decisionStatus: (row.decisionStatus ?? 'NEW') as DecisionStatus,
-      buyerNote: row.buyerNote,
-    };
-  }
-
-  function updateEdit(productCode: string, field: string, value: unknown) {
-    setEdits((prev) => {
-      const current = prev[productCode] ?? null;
-      const row = rows.find((r) => r.productCode === productCode);
-      if (!row) return prev;
-      const original = {
-        approvedQty: row.approvedQty,
-        approvedSupplierName: row.reviewApprovedSupplierName,
-        decisionStatus: (row.decisionStatus ?? 'NEW') as DecisionStatus,
-        buyerNote: row.buyerNote,
-      };
-      const base = current ?? original;
-      return { ...prev, [productCode]: { ...base, [field]: value } };
-    });
-  }
-
   return (
     <div className="review-page" dir="rtl">
       <header className="review-header">
         <div className="review-header__brand">
           <h1 className="review-header__title">Horeca Smart OS</h1>
-          <span className="review-header__subtitle">مراجعة واعتماد المشتريات</span>
+          <span className="review-header__subtitle">مراجعة مشتريات الشركات</span>
         </div>
         <nav className="review-header__nav">
-          <button
-            className="btn btn--ghost"
-            onClick={() => navigate('/')}
-          >
+          <button className="btn--nav" onClick={() => navigate('/')}>
             نظرة عامة
+          </button>
+          <button
+            className="btn--nav btn--nav-active"
+            onClick={() => navigate('/procurement/review')}
+            aria-current="page"
+          >
+            مراجعة واعتماد المشتريات
           </button>
           <button
             className="btn btn--ghost"
@@ -301,6 +319,32 @@ export function ProcurementReviewPage() {
       </header>
 
       <main className="review-main">
+        {/* Top title and short note */}
+        <div className="review-top-section">
+          <div>
+            <h2 className="review-title">مراجعة مشتريات الشركات</h2>
+            <p className="review-subtitle">
+              تتم مراجعة احتياجات MAS وHoreca Smart بصورة مستقلة.
+            </p>
+          </div>
+          <div className="review-export-actions">
+            <button
+              className="btn btn--primary"
+              onClick={() => handleExport('draft')}
+              disabled={exportingScope !== null}
+            >
+              {exportingScope === 'draft' ? 'جاري التصدير...' : 'تصدير مسودة Excel'}
+            </button>
+            <button
+              className="btn btn--primary"
+              onClick={() => handleExport('approved')}
+              disabled={exportingScope !== null}
+            >
+              {exportingScope === 'approved' ? 'جاري التصدير...' : 'تصدير المعتمد Excel'}
+            </button>
+          </div>
+        </div>
+
         {/* Filters */}
         <div className="filters" role="search" aria-label="تصفية المنتجات">
           <div className="filters__group">
@@ -313,7 +357,7 @@ export function ProcurementReviewPage() {
               value={company}
               onChange={(e) => setCompany(e.target.value as CompanyFilter)}
             >
-              <option value="all">جميع الشركات</option>
+              <option value="all">الكل</option>
               <option value="1">MAS</option>
               <option value="2">Horeca Smart</option>
             </select>
@@ -349,7 +393,9 @@ export function ProcurementReviewPage() {
             >
               <option value="all">جميع الحالات</option>
               {DECISION_OPTIONS.map((s) => (
-                <option key={s} value={s}>{DECISION_STATUS_LABELS[s]}</option>
+                <option key={s} value={s}>
+                  {DECISION_STATUS_LABELS[s]}
+                </option>
               ))}
             </select>
           </div>
@@ -382,34 +428,49 @@ export function ProcurementReviewPage() {
           </div>
         </div>
 
-        {/* Messages */}
+        {/* Error / Success Messages */}
         {errorMessage && (
           <div className="review-message review-message--error" role="alert">
-            {errorMessage}
-            <button className="review-message__close" onClick={() => setErrorMessage(null)}>✕</button>
+            <span>{errorMessage}</span>
+            <button
+              className="review-message__close"
+              onClick={() => setErrorMessage(null)}
+              aria-label="إغلاق التنبيه"
+            >
+              ✕
+            </button>
           </div>
         )}
         {successMessage && (
           <div className="review-message review-message--success" role="status">
-            {successMessage}
-            <button className="review-message__close" onClick={() => setSuccessMessage(null)}>✕</button>
+            <span>{successMessage}</span>
+            <button
+              className="review-message__close"
+              onClick={() => setSuccessMessage(null)}
+              aria-label="إغلاق التنبيه"
+            >
+              ✕
+            </button>
           </div>
         )}
 
-        {/* Bulk actions bar */}
-        {selectedProducts.length > 0 && (
+        {/* Bulk Action Bar */}
+        {selectedRows.length > 0 && (
           <div className="review-bulk-bar">
             <span className="review-bulk-bar__count">
-              تم اختيار {selectedProducts.length} منتج
+              تم اختيار {selectedRows.length} عنصر
             </span>
             <div className="review-bulk-bar__actions">
               <select
                 className="filters__select"
                 value={bulkDecisionStatus}
                 onChange={(e) => setBulkDecisionStatus(e.target.value as DecisionStatus)}
+                aria-label="حالة الاعتماد الجماعي"
               >
                 {DECISION_OPTIONS.map((s) => (
-                  <option key={s} value={s}>{DECISION_STATUS_LABELS[s]}</option>
+                  <option key={s} value={s}>
+                    {DECISION_STATUS_LABELS[s]}
+                  </option>
                 ))}
               </select>
               <input
@@ -419,6 +480,7 @@ export function ProcurementReviewPage() {
                 value={bulkBuyerNote}
                 onChange={(e) => setBulkBuyerNote(e.target.value)}
                 style={{ width: '200px' }}
+                aria-label="ملاحظة الاعتماد الجماعي"
               />
               <button
                 className="btn btn--primary"
@@ -442,10 +504,20 @@ export function ProcurementReviewPage() {
         {/* Error */}
         {isError && (
           <div className="state-message state-message--error" role="alert">
-            <p>تعذّر تحميل بيانات المراجعة.</p>
+            <p>
+              {error instanceof Error &&
+              (error.message.includes('COMPANY_REVIEW_UNAVAILABLE') ||
+                error.message.includes('REVIEW_UNAVAILABLE') ||
+                (error as any).status === 503)
+                ? 'شاشة المراجعة جاهزة، لكن تحديث قاعدة البيانات لم يُطبّق بعد.'
+                : 'تعذّر تحميل بيانات المراجعة.'}
+            </p>
             <p className="state-message__detail">
               {error instanceof Error ? error.message : 'خطأ غير معروف'}
             </p>
+            <button className="btn btn--primary btn--sm" onClick={() => refetch()}>
+              إعادة المحاولة
+            </button>
           </div>
         )}
 
@@ -453,103 +525,140 @@ export function ProcurementReviewPage() {
         {data && (
           <div className="table-wrapper">
             <div className="table-scroll">
-              <table className="review-table" role="grid" aria-label="منتجات للمراجعة">
+              <table className="review-table" role="grid" aria-label="خطة مشتريات الشركات">
                 <thead>
                   <tr>
-                    <th style={{ width: 40 }}>
+                    <th scope="col" style={{ width: 40 }}>
                       <input
                         type="checkbox"
-                        checked={selectAll}
+                        checked={allSelected}
                         onChange={toggleSelectAll}
                         aria-label="اختيار الكل"
                       />
                     </th>
-                    <th>كود المنتج</th>
-                    <th>اسم المنتج</th>
-                    <th>الكمية المتاحة</th>
-                    <th>أيام التغطية</th>
-                    <th>الكمية المقترحة</th>
-                    <th>المورد المقترح</th>
-                    <th>الأولوية</th>
-                    <th>حالة البيانات</th>
-                    <th>آخر استلام</th>
-                    <th>الكمية المعتمدة</th>
-                    <th>المورد المعتمد</th>
-                    <th>حالة الاعتماد</th>
-                    <th>ملاحظة المشتري</th>
-                    <th style={{ width: 70 }}></th>
+                    <th scope="col">الشركة</th>
+                    <th scope="col">كود المنتج</th>
+                    <th scope="col">اسم المنتج</th>
+                    <th scope="col">الأولوية</th>
+                    <th scope="col">المتاح</th>
+                    <th scope="col">الطلب اليومي</th>
+                    <th scope="col">أيام التغطية</th>
+                    <th scope="col">التغطية المستهدفة</th>
+                    <th scope="col">الكمية المقترحة</th>
+                    <th scope="col">الكمية المعتمدة</th>
+                    <th scope="col">المورد</th>
+                    <th scope="col">جاهزية المورد</th>
+                    <th scope="col">آخر استلام</th>
+                    <th scope="col">آخر سعر وحدة</th>
+                    <th scope="col">القيمة التقديرية</th>
+                    <th scope="col">حالة الاعتماد</th>
+                    <th scope="col">ملاحظة المشتري</th>
+                    <th scope="col">جاهز للشراء</th>
+                    <th scope="col" style={{ width: 70 }}>
+                      حفظ
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.length === 0 ? (
                     <tr>
-                      <td colSpan={15} className="table-empty">
-                        لا توجد منتجات تطابق المعايير المحددة
+                      <td colSpan={20} className="table-empty">
+                        لا توجد مشتريات مطابقة
                       </td>
                     </tr>
                   ) : (
                     rows.map((row) => {
+                      const key = companyPurchaseRowKey(row);
                       const edit = getEdit(row);
-                      const isSaving = savingProduct === row.productCode;
-                      const hasChanges = edits[row.productCode] !== undefined;
+                      const isSaving = savingRowKey === key;
+                      const hasChanges = edits[key] !== undefined;
+
                       return (
-                        <tr key={row.productCode} className={hasChanges ? 'review-row--dirty' : ''}>
+                        <tr
+                          key={key}
+                          data-testid={`row-${key}`}
+                          className={hasChanges ? 'review-row--dirty' : ''}
+                        >
                           <td>
                             <input
                               type="checkbox"
-                              checked={selectedSet.has(row.productCode)}
-                              onChange={() => toggleSelect(row.productCode)}
-                              aria-label={`اختيار ${row.productCode}`}
+                              checked={selectedSet.has(key)}
+                              onChange={() => toggleSelect(key)}
+                              aria-label={`اختيار ${row.companyName} ${row.productCode}`}
                             />
                           </td>
-                          <td className="review-cell--code">{row.productCode}</td>
-                          <td className="review-cell--name">{row.productName}</td>
-                          <td>{formatQty(row.freeQty)}</td>
-                          <td>{formatQty(row.actualCoverageDays)}</td>
-                          <td className="review-cell--qty">{formatQty(row.suggestedQty)}</td>
-                          <td>{row.proposedSupplierName ?? '—'}</td>
                           <td>
-                            <span className={`priority-badge priority-badge--${row.priority.toLowerCase()}`}>
+                            <span
+                              className={`company-badge company-badge--${
+                                row.companyId === 1 ? 'mas' : 'horeca'
+                              }`}
+                            >
+                              {row.companyName}
+                            </span>
+                          </td>
+                          <td className="review-cell--code">{row.productCode}</td>
+                          <td className="review-cell--name" title={row.productName}>
+                            {row.productName}
+                          </td>
+                          <td>
+                            <span
+                              className={`priority-badge priority-badge--${row.priority.toLowerCase()}`}
+                            >
                               {PRIORITY_LABELS[row.priority] ?? row.priority}
                             </span>
                           </td>
-                          <td>
-                            <span className={`status-badge status-badge--${row.dataStatus === 'SUFFICIENT' ? 'approved' : 'needs-supplier'}`}>
-                              {DATA_STATUS_LABELS[row.dataStatus] ?? row.dataStatus}
-                            </span>
+                          <td className="review-cell--qty">{formatQty(row.freeQty)}</td>
+                          <td className="review-cell--qty">
+                            {formatQty(row.effectiveDailyDemand)}
                           </td>
-                          <td>{formatDate(row.latestReceiptAt)}</td>
+                          <td>{formatQty(row.coverageDays)}</td>
+                          <td>{row.targetCoverageDays}</td>
+                          <td className="review-cell--qty">{formatQty(row.suggestedQty)}</td>
                           <td>
                             <input
                               type="number"
                               className="review-input review-input--qty"
                               value={edit.approvedQty ?? ''}
-                              onChange={(e) => updateEdit(row.productCode, 'approvedQty', e.target.value ? Number(e.target.value) : null)}
+                              onChange={(e) =>
+                                updateEdit(
+                                  row,
+                                  'approvedQty',
+                                  e.target.value ? Number(e.target.value) : null,
+                                )
+                              }
                               min="0"
                               disabled={isSaving}
-                              aria-label={`الكمية المعتمدة لـ ${row.productCode}`}
+                              aria-label={`الكمية المعتمدة لـ ${row.companyName} ${row.productCode}`}
                             />
+                          </td>
+                          <td className="review-cell--name">
+                            {edit.approvedSupplierName ?? row.supplierName ?? '—'}
                           </td>
                           <td>
-                            <input
-                              type="text"
-                              className="review-input"
-                              value={edit.approvedSupplierName ?? ''}
-                              onChange={(e) => updateEdit(row.productCode, 'approvedSupplierName', e.target.value || null)}
-                              disabled={isSaving}
-                              aria-label={`المورد المعتمد لـ ${row.productCode}`}
-                            />
+                            <span
+                              className={`readiness-badge readiness-badge--${row.supplierReadiness.toLowerCase()}`}
+                            >
+                              {SUPPLIER_READINESS_LABELS[row.supplierReadiness] ??
+                                row.supplierReadiness}
+                            </span>
                           </td>
+                          <td>{formatDate(row.latestReceiptAt)}</td>
+                          <td>{formatCurrency(row.latestUnitCost)}</td>
+                          <td>{formatCurrency(row.estimatedValue)}</td>
                           <td>
                             <select
                               className="filters__select"
                               value={edit.decisionStatus}
-                              onChange={(e) => updateEdit(row.productCode, 'decisionStatus', e.target.value as DecisionStatus)}
+                              onChange={(e) =>
+                                updateEdit(row, 'decisionStatus', e.target.value as DecisionStatus)
+                              }
                               disabled={isSaving}
-                              aria-label={`حالة الاعتماد لـ ${row.productCode}`}
+                              aria-label={`حالة الاعتماد لـ ${row.companyName} ${row.productCode}`}
                             >
                               {DECISION_OPTIONS.map((s) => (
-                                <option key={s} value={s}>{DECISION_STATUS_LABELS[s]}</option>
+                                <option key={s} value={s}>
+                                  {DECISION_STATUS_LABELS[s]}
+                                </option>
                               ))}
                             </select>
                           </td>
@@ -558,10 +667,21 @@ export function ProcurementReviewPage() {
                               type="text"
                               className="review-input"
                               value={edit.buyerNote ?? ''}
-                              onChange={(e) => updateEdit(row.productCode, 'buyerNote', e.target.value || null)}
+                              onChange={(e) =>
+                                updateEdit(row, 'buyerNote', e.target.value || null)
+                              }
                               disabled={isSaving}
-                              aria-label={`ملاحظة المشتري لـ ${row.productCode}`}
+                              aria-label={`ملاحظة المشتري لـ ${row.companyName} ${row.productCode}`}
                             />
+                          </td>
+                          <td>
+                            <span
+                              className={`ready-badge ready-badge--${
+                                row.readyForPo ? 'yes' : 'no'
+                              }`}
+                            >
+                              {row.readyForPo ? 'جاهز للشراء' : 'غير جاهز للشراء'}
+                            </span>
                           </td>
                           <td>
                             <button
@@ -583,7 +703,7 @@ export function ProcurementReviewPage() {
             <div className="pagination" aria-label="التنقل بين الصفحات">
               <button
                 className="pagination__btn"
-                onClick={() => handlePageChange(pagination.page - 1)}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={pagination.page <= 1}
                 aria-label="الصفحة السابقة"
               >
@@ -591,12 +711,12 @@ export function ProcurementReviewPage() {
               </button>
               <span className="pagination__info">
                 صفحة {pagination.page.toLocaleString('ar-SA')} من{' '}
-                {Math.max(1, pagination.totalPages).toLocaleString('ar-SA')}
-                {' '}({pagination.total.toLocaleString('ar-SA')} منتج)
+                {Math.max(1, pagination.totalPages).toLocaleString('ar-SA')}{' '}
+                ({pagination.total.toLocaleString('ar-SA')} عنصر)
               </span>
               <button
                 className="pagination__btn"
-                onClick={() => handlePageChange(pagination.page + 1)}
+                onClick={() => setPage((p) => p + 1)}
                 disabled={pagination.page >= pagination.totalPages}
                 aria-label="الصفحة التالية"
               >
