@@ -312,7 +312,7 @@ revoke all on function public.rpc_review_company_purchase(
 revoke all on function public.rpc_bulk_review_company_purchases(
   jsonb, text, text, uuid, text
 ) from public, anon, authenticated;
-revoke all on view public.api_company_purchase_review
+revoke all on table public.api_company_purchase_review
   from public, anon, authenticated;
 
 grant select, insert, update, delete on table public.procurement_company_purchase_reviews
@@ -323,7 +323,7 @@ grant execute on function public.rpc_review_company_purchase(
 grant execute on function public.rpc_bulk_review_company_purchases(
   jsonb, text, text, uuid, text
 ) to service_role;
-grant select on view public.api_company_purchase_review
+grant select on table public.api_company_purchase_review
   to service_role;
 
 commit;

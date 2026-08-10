@@ -266,7 +266,7 @@ revoke all on function public.rpc_approve_recommendation(
 revoke all on function public.rpc_bulk_update_recommendations(
   jsonb, text, text, uuid, text
 ) from public, anon, authenticated;
-revoke all on view public.v_recommendation_approvals
+revoke all on table public.v_recommendation_approvals
   from public, anon, authenticated;
 
 grant select, insert, update, delete on table public.procurement_recommendation_approvals
@@ -277,7 +277,7 @@ grant execute on function public.rpc_approve_recommendation(
 grant execute on function public.rpc_bulk_update_recommendations(
   jsonb, text, text, uuid, text
 ) to service_role;
-grant select on view public.v_recommendation_approvals
+grant select on table public.v_recommendation_approvals
   to service_role;
 
 commit;
