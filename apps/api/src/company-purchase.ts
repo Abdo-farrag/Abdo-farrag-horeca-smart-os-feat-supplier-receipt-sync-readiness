@@ -41,7 +41,7 @@ function mapRowToCamelCase(row: Record<string, any>): CompanyPurchaseRow {
     supplierId: row.supplier_id !== null && row.supplier_id !== undefined ? Number(row.supplier_id) : null,
     supplierName: row.supplier_name ?? null,
     supplierReadiness: row.supplier_readiness ?? 'NEEDS_SUPPLIER',
-    latestReceiptAt: row.latest_receipt_at ?? null,
+    latestReceiptAt: row.latest_receipt_at ? new Date(String(row.latest_receipt_at)).toISOString() : null,
     latestUnitCost: row.latest_unit_cost !== null && row.latest_unit_cost !== undefined ? Number(row.latest_unit_cost) : null,
     estimatedValue: row.estimated_value !== null && row.estimated_value !== undefined ? Number(row.estimated_value) : null,
     decisionStatus: row.decision_status ?? 'NEW',
@@ -103,10 +103,10 @@ async function listCompanyPurchaseReview(
 
   let filterString = '';
   if (andConditions.length > 0) {
-    filterString = `and(${andConditions.join(',')})`;
+    filterString = `and=(${andConditions.join(',')})`;
   }
 
-  const countQuery = `/rest/v1/api_company_purchase_review?select=product_code${filterString ? `&${filterString}` : ''}&count=exact&limit=0`;
+  const countQuery = `/rest/v1/api_company_purchase_review?select=product_code${filterString ? `&${filterString}` : ''}&limit=0`;
   const countResponse = await supabaseRequest(config, countQuery, {
     headers: { Accept: 'application/json', Prefer: 'count=exact' },
   });
@@ -277,7 +277,7 @@ async function exportCompanyPurchaseRows(
 
   let filterString = '';
   if (andConditions.length > 0) {
-    filterString = `and(${andConditions.join(',')})`;
+    filterString = `and=(${andConditions.join(',')})`;
   }
 
   while (page <= maxPages) {
