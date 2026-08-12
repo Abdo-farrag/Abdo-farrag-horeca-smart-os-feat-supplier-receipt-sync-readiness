@@ -54,7 +54,7 @@ export const CompanyPurchaseRowSchema = z.object({
   priority: PrioritySchema,
   freeQty: z.number(),
   effectiveDailyDemand: z.number().nonnegative(),
-  coverageDays: z.number().nonnegative().nullable(),
+  coverageDays: z.number().nullable(),
   targetCoverageDays: z.number().nonnegative(),
   suggestedQty: z.number().nonnegative().nullable(),
   approvedQty: z.number().nonnegative().nullable(),
