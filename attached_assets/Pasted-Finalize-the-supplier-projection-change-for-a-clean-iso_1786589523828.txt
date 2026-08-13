@@ -1,0 +1,101 @@
+Finalize the supplier-projection change for a clean, isolated PR.
+
+Do not deploy or apply anything to live Supabase.
+Do not call Odoo or Supplier Receipt Sync.
+Do not push until all checks pass.
+
+1. Preserve current work:
+   - Confirm commit 0af6b00 exists.
+   - Confirm the working-tree plan(21) change.
+   - Do not delete or rewrite any commit until a safe branch reference exists.
+
+2. Create a clean branch:
+   - Fetch origin.
+   - Create:
+     fix/canonical-supplier-projection
+     from the latest origin/main.
+   - Transfer only the supplier-projection changes.
+   - Do not include:
+     - .replit
+     - any CSV file
+     - generated artifacts
+     - secrets
+     - unrelated commits or application changes
+
+3. Required PR files:
+   - supabase/migrations/20260812210000_supplier_projection_fix.sql
+   - supabase/tests/supplier_projection_fix.sql
+   - apps/api/test/company-purchase-no-supplier-filter.test.ts
+   - .github/fixtures/ci_external_procurement_sources.sql
+
+4. Update the permanent CI fixture:
+   - Add minimal, type-correct stubs for raw_products and sku_supplier_settings.
+   - Include only columns required by the migration and tests.
+   - Do not insert real supplier data or copy the uploaded CSV.
+   - Ensure a clean checkout can run migrations and pgTAP without manual fixture edits.
+
+5. Fix pgTAP:
+   - Commit plan(21).
+   - Keep all 21 supplier-projection tests.
+
+6. Harden and test permissions:
+   Add explicit permission statements unless already guaranteed:
+
+   revoke all on table public.raw_products
+     from public, anon, authenticated;
+
+   revoke all on table public.sku_supplier_settings
+     from public, anon, authenticated;
+
+   revoke all on table public.api_company_purchase_review
+     from public, anon, authenticated;
+
+   grant select on table public.raw_products to service_role;
+   grant select on table public.sku_supplier_settings to service_role;
+   grant select on table public.api_company_purchase_review to service_role;
+
+   Add pgTAP/database assertions using has_table_privilege proving:
+   - PUBLIC: no SELECT
+   - anon: no SELECT
+   - authenticated: no SELECT
+   - service_role: SELECT
+   for all three objects.
+
+   Do not rely on a request without an API key as security evidence.
+
+7. Confirm the view uses:
+   WITH (security_invoker = true)
+
+8. Verify business rules:
+   - VERIFIED_RECEIPT requires positive external receipt.
+   - FALLBACK_NEEDS_REVIEW uses primary_supplier only.
+   - Fallback supplier_id remains NULL.
+   - Fallback ready_for_po remains false.
+   - NEEDS_SUPPLIER requires no external receipt and no fallback.
+   - Intercompany receipts remain excluded.
+   - Total rows remain 1,510.
+   - Duplicate company_id:product_code keys remain 0.
+
+9. Run from a clean local Supabase:
+   - npx supabase stop --no-backup
+   - npx supabase start
+   - npx supabase test db
+   - npm run lint
+   - npm run typecheck
+   - npm test
+   - npm run build
+   - git diff --check
+
+10. Before committing, report:
+   - git diff origin/main...HEAD --name-status
+   - exact changed-file list
+   - pgTAP totals
+   - npm test totals
+   - permission matrix
+   - confirmation that CSV and .replit are absent
+
+11. If and only if everything passes:
+   Commit with:
+   fix(procurement): use canonical fallback supplier projection
+
+Do not push or create the PR yet.
