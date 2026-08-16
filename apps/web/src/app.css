@@ -619,6 +619,142 @@ body {
   width: 100%;
 }
 
+.supplier-combobox {
+  min-width: 250px;
+  position: relative;
+}
+
+.supplier-combobox__options {
+  position: absolute;
+  z-index: 30;
+  inset-inline: 0;
+  top: calc(100% + 0.25rem);
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.35rem;
+  list-style: none;
+  border: 1px solid #d8e1ec;
+  border-radius: 0.65rem;
+  background: #fff;
+  box-shadow: 0 12px 28px rgb(15 35 62 / 14%);
+}
+
+.supplier-combobox__options button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem;
+  border: 0;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: #1f3858;
+  text-align: start;
+  cursor: pointer;
+}
+
+.supplier-combobox__options button:hover,
+.supplier-combobox__options button[aria-selected="true"] {
+  background: #eef5ff;
+}
+
+.supplier-combobox__options span,
+.supplier-combobox__empty {
+  color: #66758a;
+  font-size: 0.8rem;
+}
+
+.supplier-combobox__clear {
+  margin-top: 0.25rem;
+  border: 0;
+  background: none;
+  color: #365f91;
+  cursor: pointer;
+}
+
+.purchase-draft-panel {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #c8d8ea;
+  border-radius: 0.9rem;
+  background: #f8fbff;
+  box-shadow: 0 8px 24px rgb(15 35 62 / 8%);
+}
+
+.purchase-draft-panel__header,
+.purchase-draft-panel__toolbar,
+.purchase-draft-panel__actions,
+.purchase-draft-panel__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.purchase-draft-panel__header h3 {
+  margin: 0 0 0.25rem;
+  color: #173a66;
+}
+
+.purchase-draft-panel__header p,
+.purchase-draft-panel__summary span {
+  margin: 0;
+  color: #64748b;
+}
+
+.purchase-draft-panel__setup {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: end;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.purchase-draft-panel__summary {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+}
+
+.purchase-draft-panel__toolbar,
+.purchase-draft-panel__actions {
+  margin: 1rem 0;
+}
+
+.purchase-draft-panel__rfq-reference {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  align-items: end;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #d8e1ec;
+}
+
+.purchase-draft-panel__reference-confirmed {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: #e8f7ee;
+  color: #17613b;
+}
+
+.purchase-draft-panel__toolbar > div:first-child {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.status-badge {
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4f91;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 /* Review table (wider for more columns) */
 .review-table {
   width: 100%;

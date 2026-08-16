@@ -173,7 +173,7 @@ describe('Company Purchase Review API', () => {
       expect(capturedCompany).toBe('all');
     });
 
-    it('supports search, priority, decisionStatus, noSupplier, page and pageSize', async () => {
+    it('supports supplier, brand, search, decision and pagination filters', async () => {
       let capturedParams: any;
       const app = buildApp({
         auth: makeAuth({ overviewAuthDisabled: true }),
@@ -193,7 +193,7 @@ describe('Company Purchase Review API', () => {
 
       await app.inject({
         method: 'GET',
-        url: '/api/procurement/company-review?search=tea&priority=HIGH&decisionStatus=APPROVED&noSupplier=true&page=2&pageSize=20',
+        url: '/api/procurement/company-review?search=tea&priority=HIGH&decisionStatus=APPROVED&noSupplier=true&supplierId=99001&brandId=77&page=2&pageSize=20',
       });
 
       expect(capturedParams).toMatchObject({
@@ -201,6 +201,8 @@ describe('Company Purchase Review API', () => {
         priority: 'HIGH',
         decisionStatus: 'APPROVED',
         noSupplier: true,
+        supplierId: 99001,
+        brandId: 77,
         page: 2,
         pageSize: 20,
       });

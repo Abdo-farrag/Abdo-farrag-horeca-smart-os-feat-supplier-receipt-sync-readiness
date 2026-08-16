@@ -11,6 +11,8 @@ export interface CompanyReviewFiltersInput {
   priority: string;
   decisionStatus: string;
   noSupplier: boolean;
+  supplierId?: number;
+  brandId?: string;
   page: number;
   pageSize: number;
 }
@@ -25,6 +27,8 @@ export async function fetchCompanyPurchaseReview(filters: CompanyReviewFiltersIn
   params.set('priority', filters.priority);
   params.set('decisionStatus', filters.decisionStatus);
   params.set('noSupplier', String(filters.noSupplier));
+  if (filters.supplierId !== undefined) params.set('supplierId', String(filters.supplierId));
+  if (filters.brandId && filters.brandId !== 'all') params.set('brandId', filters.brandId);
   params.set('page', String(filters.page));
   params.set('pageSize', String(filters.pageSize));
 

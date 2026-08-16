@@ -8,6 +8,10 @@ import {
   useBulkSaveCompanyDecisions,
 } from '../hooks/useReview.js';
 import { downloadPurchaseExport } from '../api/review.js';
+import { fetchBrandOptions, type BrandOption } from '../api/purchase-drafts.js';
+import { SupplierCombobox } from '../components/SupplierCombobox.js';
+import { PurchaseDraftPanel } from '../components/PurchaseDraftPanel.js';
+import type { SupplierDirectoryItem } from '@horeca/contracts';
 import {
   companyPurchaseRowKey,
   type CompanyFilter,
@@ -81,9 +85,13 @@ export function ProcurementReviewPage() {
   const [priority, setPriority] = useState('all');
   const [decisionStatus, setDecisionStatus] = useState('all');
   const [noSupplier, setNoSupplier] = useState(false);
+  const [supplierFilter, setSupplierFilter] = useState<SupplierDirectoryItem | null>(null);
+  const [brandFilter, setBrandFilter] = useState('all');
+  const [brandOptions, setBrandOptions] = useState<BrandOption[]>([]);
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [page, setPage] = useState(1);
+  const [draftPanelOpen, setDraftPanelOpen] = useState(false);
 
   const saveDecisionMutation = useSaveCompanyDecision();
   const bulkMutation = useBulkSaveCompanyDecisions();
@@ -106,9 +114,22 @@ export function ProcurementReviewPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [company, priority, decisionStatus, noSupplier, debouncedSearch]);
+  }, [company, priority, decisionStatus, noSupplier, supplierFilter, brandFilter, debouncedSearch]);
 
-  const filters = { company, priority, decisionStatus, noSupplier, search: debouncedSearch, page };
+  useEffect(() => {
+    fetchBrandOptions().then(setBrandOptions).catch(() => setBrandOptions([]));
+  }, []);
+
+  const filters = {
+    company,
+    priority,
+    decisionStatus,
+    noSupplier,
+    ...(supplierFilter ? { supplierId: supplierFilter.supplierId } : {}),
+    brandId: brandFilter,
+    search: debouncedSearch,
+    page,
+  };
   const { data, isPending, isError, error, refetch } = useCompanyPurchaseReview(filters);
 
   const rows = data?.rows ?? [];
@@ -122,6 +143,11 @@ export function ProcurementReviewPage() {
 
   // Selected rows by rowKey
   const [selectedSet, setSelectedSet] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setSelectedSet(new Set());
+    setDraftPanelOpen(false);
+  }, [company, priority, decisionStatus, noSupplier, supplierFilter, brandFilter, debouncedSearch, page]);
 
   const toggleSelectAll = useCallback(() => {
     setSelectedSet((prev) => {
@@ -363,6 +389,35 @@ export function ProcurementReviewPage() {
             </select>
           </div>
 
+          <div className="filters__group filters__group--supplier">
+            <SupplierCombobox
+              label="المورد المقترح"
+              value={supplierFilter}
+              onChange={setSupplierFilter}
+              allowClear
+            />
+          </div>
+
+          <div className="filters__group">
+            <label className="filters__label" htmlFor="review-brand">البراند الرسمي</label>
+            <select
+              id="review-brand"
+              className="filters__select"
+              value={brandFilter}
+              onChange={(event) => setBrandFilter(event.target.value)}
+            >
+              <option value="all">كل البراندات</option>
+              {brandOptions.map((brand) => (
+                <option
+                  key={brand.brandId ?? 'undefined'}
+                  value={brand.brandId ?? 'undefined'}
+                >
+                  {brand.brandName ?? 'براند غير محدد'} ({brand.productCount})
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="filters__group">
             <label className="filters__label" htmlFor="review-priority">
               الأولوية
@@ -489,8 +544,21 @@ export function ProcurementReviewPage() {
               >
                 {bulkMutation.isPending ? 'جاري الحفظ...' : 'تطبيق على المختار'}
               </button>
+              <button
+                className="btn btn--primary"
+                onClick={() => setDraftPanelOpen(true)}
+              >
+                إنشاء مسودة RFQ
+              </button>
             </div>
           </div>
+        )}
+
+        {draftPanelOpen && (
+          <PurchaseDraftPanel
+            selectedRows={selectedRows}
+            onClose={() => setDraftPanelOpen(false)}
+          />
         )}
 
         {/* Loading */}
@@ -539,6 +607,7 @@ export function ProcurementReviewPage() {
                     <th scope="col">الشركة</th>
                     <th scope="col">كود المنتج</th>
                     <th scope="col">اسم المنتج</th>
+                    <th scope="col">البراند</th>
                     <th scope="col">الأولوية</th>
                     <th scope="col">المتاح</th>
                     <th scope="col">الطلب اليومي</th>
@@ -562,7 +631,7 @@ export function ProcurementReviewPage() {
                 <tbody>
                   {rows.length === 0 ? (
                     <tr>
-                      <td colSpan={20} className="table-empty">
+                      <td colSpan={21} className="table-empty">
                         لا توجد مشتريات مطابقة
                       </td>
                     </tr>
@@ -600,6 +669,7 @@ export function ProcurementReviewPage() {
                           <td className="review-cell--name" title={row.productName}>
                             {row.productName}
                           </td>
+                          <td>{row.brandName ?? 'براند غير محدد'}</td>
                           <td>
                             <span
                               className={`priority-badge priority-badge--${row.priority.toLowerCase()}`}

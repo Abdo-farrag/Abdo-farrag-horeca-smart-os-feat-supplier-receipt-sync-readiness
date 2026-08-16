@@ -35,3 +35,6 @@ enabled = false
 
 [functions.sync-odoo18-supplier-receipts]
 verify_jwt = true
+
+[functions.sync-odoo18-purchase-reference]
+verify_jwt = true

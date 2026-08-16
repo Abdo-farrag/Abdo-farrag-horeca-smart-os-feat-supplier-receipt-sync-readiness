@@ -25,12 +25,21 @@ function generateRequestId(): string {
   return `req-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
+function safePostgrestSearch(value: string): string {
+  return value
+    .replace(/[^\p{L}\p{N}\s_/-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function mapRowToCamelCase(row: Record<string, any>): CompanyPurchaseRow {
   const mapped = {
     companyId: Number(row.company_id),
     companyName: String(row.company_name ?? ''),
     productCode: String(row.product_code ?? ''),
     productName: String(row.product_name ?? ''),
+    brandId: row.brand_id !== null && row.brand_id !== undefined ? Number(row.brand_id) : null,
+    brandName: row.brand_name ?? null,
     priority: String(row.priority ?? 'LOW'),
     freeQty: Number(row.free_qty ?? 0),
     effectiveDailyDemand: Number(row.effective_daily_demand ?? 0),
@@ -83,7 +92,7 @@ async function listCompanyPurchaseReview(
   }
 
   if (params.search) {
-    const trimmed = params.search.trim();
+    const trimmed = safePostgrestSearch(params.search);
     if (trimmed) {
       andConditions.push(`or(product_code.ilike.*${trimmed}*,product_name.ilike.*${trimmed}*)`);
     }
@@ -99,6 +108,16 @@ async function listCompanyPurchaseReview(
 
   if (params.noSupplier) {
     andConditions.push('supplier_readiness.eq.NEEDS_SUPPLIER');
+  }
+
+  if (params.supplierId !== undefined) {
+    andConditions.push(`supplier_id.eq.${params.supplierId}`);
+  }
+
+  if (params.brandId === 'undefined') {
+    andConditions.push('brand_id.is.null');
+  } else if (params.brandId !== undefined) {
+    andConditions.push(`brand_id.eq.${params.brandId}`);
   }
 
   let filterString = '';

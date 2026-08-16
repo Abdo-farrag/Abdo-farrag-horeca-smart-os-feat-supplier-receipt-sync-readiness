@@ -8,8 +8,15 @@ declare module "npm:@supabase/supabase-js@2.110.8" {
     error: SupabaseOperationError | null;
   }>;
 
+  export type SupabaseSelectQuery = {
+    limit(
+      count: number,
+    ): SupabaseOperationResult<Record<string, unknown>[] | null>;
+  };
+
   export type SupabaseTableQuery = {
     insert(values: unknown): SupabaseOperationResult;
+    select(columns: string): SupabaseSelectQuery;
     upsert(
       values: unknown,
       options?: { onConflict?: string },

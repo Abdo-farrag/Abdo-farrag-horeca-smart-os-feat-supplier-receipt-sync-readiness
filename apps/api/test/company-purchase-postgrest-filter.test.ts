@@ -133,6 +133,25 @@ describe('listCompanyPurchaseReview — PostgREST URL filter correctness', () =>
     expect(andValue).toContain('supplier_readiness.eq.NEEDS_SUPPLIER');
   });
 
+  it('filters by the canonical supplier id', async () => {
+    const deps = createSupabaseCompanyPurchaseDependencies(MOCK_CONFIG);
+    await deps.list({
+      company: '1', supplierId: 99001, page: 1, pageSize: 50,
+    });
+
+    expect(andParam(capturedUrls()[0])).toContain('supplier_id.eq.99001');
+  });
+
+  it('filters by an official brand id or by the explicit undefined-brand state', async () => {
+    const deps = createSupabaseCompanyPurchaseDependencies(MOCK_CONFIG);
+    await deps.list({ company: 'all', brandId: 77, page: 1, pageSize: 50 });
+    expect(andParam(capturedUrls()[0])).toContain('brand_id.eq.77');
+
+    vi.mocked(fetch).mockClear();
+    await deps.list({ company: 'all', brandId: 'undefined', page: 1, pageSize: 50 });
+    expect(andParam(capturedUrls()[0])).toContain('brand_id.is.null');
+  });
+
   it('wraps the search condition in or() nested inside and= ', async () => {
     const deps = createSupabaseCompanyPurchaseDependencies(MOCK_CONFIG);
     await deps.list({ company: 'all', search: 'tea', priority: 'all', decisionStatus: 'all', noSupplier: false, page: 1, pageSize: 50 });
@@ -142,6 +161,16 @@ describe('listCompanyPurchaseReview — PostgREST URL filter correctness', () =>
     const andValue = andParam(urls[0]);
     // The search or() must be nested inside the and=() value
     expect(andValue).toContain('or(product_code.ilike.*tea*,product_name.ilike.*tea*)');
+  });
+
+  it('removes PostgREST control characters from user search input', async () => {
+    const deps = createSupabaseCompanyPurchaseDependencies(MOCK_CONFIG);
+    await deps.list({
+      company: 'all', search: 'tea*),supplier_id.gt.0', page: 1, pageSize: 50,
+    });
+    const value = andParam(capturedUrls()[0]);
+    expect(value).not.toContain('supplier_id.gt.0');
+    expect(value).toContain('product_code.ilike.*tea supplier_id gt 0*');
   });
 
   it('combines all active filters correctly inside a single and=(...) param', async () => {

@@ -19,8 +19,21 @@ vi.mock('../api/review.js', () => ({
   downloadPurchaseExport: vi.fn(),
 }));
 
+vi.mock('../api/purchase-drafts.js', () => ({
+  fetchBrandOptions: vi.fn(),
+  searchSuppliers: vi.fn(),
+  createPurchaseDraft: vi.fn(),
+  fetchPurchaseDraft: vi.fn(),
+  updatePurchaseDraftLine: vi.fn(),
+  changePurchaseDraftSupplier: vi.fn(),
+  transitionPurchaseDraft: vi.fn(),
+  downloadPurchaseDraftRfq: vi.fn(),
+  setPurchaseDraftRfqReference: vi.fn(),
+}));
+
 import * as authApi from '../api/auth.js';
 import * as reviewApi from '../api/review.js';
+import * as draftApi from '../api/purchase-drafts.js';
 
 const masRow = {
   companyId: 1 as const,
@@ -108,6 +121,8 @@ describe('Company-First Procurement Review Page', () => {
     vi.mocked(authApi.checkSession).mockResolvedValue({ authenticated: true });
     vi.mocked(reviewApi.fetchCompanyPurchaseReview).mockResolvedValue(mockCompanyReviewResponse);
     vi.mocked(reviewApi.downloadPurchaseExport).mockResolvedValue(undefined);
+    vi.mocked(draftApi.fetchBrandOptions).mockResolvedValue([]);
+    vi.mocked(draftApi.searchSuppliers).mockResolvedValue([]);
   });
 
   it('renders company-first review and proves company independence for identical productCode', async () => {
@@ -209,6 +224,37 @@ describe('Company-First Procurement Review Page', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('row-1:101002')).not.toBeInTheDocument();
       expect(screen.getByTestId('row-2:101002')).toBeInTheDocument();
+    });
+  });
+
+  it('filters recommendations by official brand and active supplier', async () => {
+    const user = userEvent.setup();
+    vi.mocked(draftApi.fetchBrandOptions).mockResolvedValue([
+      { brandId: null, brandName: null, productCount: 3 },
+      { brandId: 77, brandName: 'Official Brand', productCount: 12 },
+    ]);
+    vi.mocked(draftApi.searchSuppliers).mockResolvedValue([{
+      supplierId: 99001,
+      supplierName: 'RFQ Supplier A',
+      supplierCode: 'RFQ-A',
+      supplierRank: 2,
+      active: true,
+      sourceUpdatedAt: null,
+    }]);
+
+    renderWithProviders(<AppRoutes />, { initialEntries: ['/procurement/review'] });
+    await screen.findByTestId('row-1:101002');
+
+    await user.selectOptions(screen.getByLabelText('البراند الرسمي'), '77');
+    const supplierSearch = screen.getByRole('combobox', { name: 'المورد المقترح' });
+    await user.click(supplierSearch);
+    await user.type(supplierSearch, 'RFQ-A');
+    await user.click(await screen.findByRole('option', { name: /RFQ Supplier A/ }));
+
+    await waitFor(() => {
+      expect(reviewApi.fetchCompanyPurchaseReview).toHaveBeenCalledWith(
+        expect.objectContaining({ brandId: '77', supplierId: 99001 }),
+      );
     });
   });
 
