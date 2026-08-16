@@ -27,10 +27,12 @@ import {
   purchaseReferenceWriteAllowed,
 } from "../_shared/purchase-reference-input.ts";
 
-type OdooProductRow = Omit<
-  OdooProductPurchaseReference,
-  "official_brand" | "purchase_uom" | "order_multiple"
-> & Record<string, unknown>;
+type OdooProductRow =
+  & Omit<
+    OdooProductPurchaseReference,
+    "official_brand" | "purchase_uom" | "order_multiple"
+  >
+  & Record<string, unknown>;
 
 type OdooSupplierInfo = {
   id: number;
@@ -129,9 +131,8 @@ Deno.serve(async (req: Request) => {
     if (knownSupplierError) {
       throw new Error(`Supplier directory read failed: ${knownSupplierError.message}`);
     }
-    const knownSupplierIds = (knownSupplierRows ?? []).map((row) =>
-      Number(row.odoo_supplier_id)
-    ).filter((id) => Number.isSafeInteger(id) && id > 0);
+    const knownSupplierIds = (knownSupplierRows ?? []).map((row) => Number(row.odoo_supplier_id))
+      .filter((id) => Number.isSafeInteger(id) && id > 0);
 
     const productFields = await readableFields(credentials, uid, "product.product", context);
     const requiredProductFields = ["id", "default_code", "product_tmpl_id", "write_date"];
@@ -341,7 +342,9 @@ Deno.serve(async (req: Request) => {
             productRows.map((row) => ({ ...row, synced_at: syncedAt, updated_at: syncedAt })),
             { onConflict: "product_code" },
           );
-        if (productError) throw new Error(`Product metadata upsert failed: ${productError.message}`);
+        if (productError) {
+          throw new Error(`Product metadata upsert failed: ${productError.message}`);
+        }
         writtenRows += productRows.length;
 
         if (vendorRows.length > 0) {
