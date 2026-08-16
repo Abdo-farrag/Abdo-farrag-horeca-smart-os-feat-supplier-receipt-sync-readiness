@@ -70,3 +70,45 @@ revoke all on table public.v_procurement_recommendation_configurable from public
 grant select, insert on table public.sync_logs to service_role;
 grant select on table public.v_procurement_sync_status_latest to service_role;
 grant select on table public.v_procurement_recommendation_configurable to service_role;
+
+-- ── Odoo-synced catalogue tables ─────────────────────────────────────────────
+-- raw_products and sku_supplier_settings exist only on live Supabase (synced
+-- from Odoo). These minimal stubs allow migrations and pgTAP tests to run on
+-- a clean local checkout without manual fixture edits.
+-- Only columns referenced by 20260812210000_supplier_projection_fix.sql and
+-- supabase/tests/supplier_projection_fix.sql are included.
+
+create table public.raw_products (
+  product_id          bigint  primary key,
+  product_name        text,
+  internal_reference  text,
+  category            text,
+  cost                numeric,
+  sale_price          numeric,
+  active              boolean,
+  product_type        text,
+  updated_at          timestamptz,
+  product_tmpl_id     bigint,
+  barcode             text
+);
+
+create table public.sku_supplier_settings (
+  id                uuid        primary key default gen_random_uuid(),
+  product_id        integer     not null,
+  primary_supplier  text,
+  backup_supplier   text,
+  lead_time_days    integer,
+  safety_days       integer,
+  max_coverage_days integer,
+  min_margin_target numeric,
+  is_kvi            boolean,
+  sku_class         text,
+  notes             text,
+  updated_at        timestamptz
+);
+
+revoke all on table public.raw_products         from public, anon, authenticated;
+revoke all on table public.sku_supplier_settings from public, anon, authenticated;
+
+grant select on table public.raw_products         to service_role;
+grant select on table public.sku_supplier_settings to service_role;
