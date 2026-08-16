@@ -96,14 +96,14 @@ from (
       'Test Product One'::text, 'Test Product One'::text, 27::numeric,
       2::numeric, current_date, now(), 'MANUAL'::text, 2::numeric,
       180::numeric, 27::numeric, 0::numeric, 0::numeric, 0::numeric,
-      4::integer, 7::integer, 23::numeric, 'CRITICAL'::text,
+      13.5::numeric, 4::integer, 7::integer, 23::numeric, 'CRITICAL'::text,
       'SUFFICIENT'::text, 'NEEDS_SUPPLIER'::text, null::bigint, null::text,
       null::bigint, null::text, null::timestamptz, 0::bigint),
     (1::bigint, 'MAS'::text, 98002::bigint, 'TEST-RFQ-2'::text,
       'Test Product Two'::text, 'Test Product Two'::text, 15::numeric,
       1::numeric, current_date, now(), 'MANUAL'::text, 1::numeric,
       90::numeric, 15::numeric, 0::numeric, 0::numeric, 0::numeric,
-      4::integer, 7::integer, 10::numeric, 'HIGH'::text,
+      15::numeric, 4::integer, 7::integer, 10::numeric, 'HIGH'::text,
       'SUFFICIENT'::text, 'NEEDS_SUPPLIER'::text, null::bigint, null::text,
       null::bigint, null::text, null::timestamptz, 0::bigint)
 ) as source(
@@ -111,7 +111,7 @@ from (
   effective_product_name, available_quantity, effective_daily_demand,
   last_sale_date, snapshot_at, demand_method, manual_daily_demand,
   sales_qty_90d, free_qty, forecast_qty, lead_time_qty, safety_stock_qty,
-  lead_time_days, safety_stock_days, suggested_qty, priority, data_status,
+  actual_coverage_days, lead_time_days, safety_stock_days, suggested_qty, priority, data_status,
   supplier_status, proposed_supplier_id, proposed_supplier_name,
   approved_supplier_id, approved_supplier_name, latest_receipt_at, version
 );
