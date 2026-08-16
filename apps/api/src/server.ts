@@ -2,6 +2,7 @@ import { buildApp } from './app.js';
 import { createSupabaseAuthDependencies } from './auth/supabase-auth.js';
 import { createSupabaseCompanyPurchaseDependencies } from './company-purchase.js';
 import { createSupabaseProcurementDependencies } from './supabase-procurement.js';
+import { createSupabasePurchaseDraftDependencies } from './purchase-drafts.js';
 import { createSupabaseReviewDependencies } from './supabase-review.js';
 import { loadConfig, redactSecrets } from './config.js';
 
@@ -12,6 +13,7 @@ function start(): void {
     procurement: createSupabaseProcurementDependencies(config),
     review: createSupabaseReviewDependencies(config),
     companyPurchase: createSupabaseCompanyPurchaseDependencies(config),
+    purchaseDrafts: createSupabasePurchaseDraftDependencies(config),
   });
 
   app.listen({ port: config.PORT, host: config.HOST }).catch((error: unknown) => {

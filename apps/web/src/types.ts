@@ -89,6 +89,8 @@ export interface CompanyReviewFilters {
   priority: string;
   decisionStatus: string;
   noSupplier: boolean;
+  supplierId?: number;
+  brandId: string;
   page: number;
 }
 

@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,8 +11,19 @@ import {
   verifyOverviewSession,
 } from './auth/service.js';
 import type { BuildAppOptions, ProcurementOverviewParams } from './auth/types.js';
-import { CompanyPurchaseDecisionInputSchema, CompanyPurchaseExportQuerySchema } from '@horeca/contracts';
+import {
+  CompanyPurchaseDecisionInputSchema,
+  CompanyPurchaseExportQuerySchema,
+  PurchaseDraftCreateInputSchema,
+  PurchaseDraftLineInputSchema,
+  PurchaseDraftRfqReferenceInputSchema,
+  PurchaseDraftStatusInputSchema,
+  PurchaseDraftStatusSchema,
+  SupplierDirectoryQuerySchema,
+} from '@horeca/contracts';
+import { z } from 'zod';
 import { buildPurchaseWorkbook } from './purchase-export.js';
+import { buildPurchaseDraftRfqWorkbook } from './purchase-draft-export.js';
 
 interface LoginBody {
   password?: string;
@@ -54,12 +65,51 @@ type ReviewQuerystring = {
   priority?: string;
   decisionStatus?: string;
   noSupplier?: string;
+  supplierId?: string;
+  brandId?: string;
   page?: string;
   pageSize?: string;
 };
 
 const VALID_COVERAGE_DAYS = new Set([7, 14, 21, 30]);
 const VALID_DECISION_STATUSES = new Set(['NEW', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'DEFERRED']);
+const UuidSchema = z.string().uuid();
+const ChangeDraftSupplierSchema = z.object({
+  supplierId: z.number().int().positive(),
+  expectedVersion: z.number().int().min(1),
+});
+
+function purchaseDraftError(error: unknown): { status: number; code: string } {
+  const message = error instanceof Error ? error.message : 'PURCHASE_DRAFT_UNAVAILABLE';
+  const stableCodes = [
+    'VERSION_CONFLICT',
+    'SUPPLIER_NOT_FOUND',
+    'DRAFT_NOT_FOUND',
+    'DRAFT_LINE_NOT_FOUND',
+    'DRAFT_NOT_EDITABLE',
+    'INVALID_STATUS_TRANSITION',
+    'RFQ_REFERENCE_NOT_ALLOWED',
+    'RECOMMENDATION_NOT_FOUND',
+    'NON_POSITIVE_SUGGESTED_QUANTITY',
+    'DRAFT_NOT_READY_FOR_EXPORT',
+    'EMPTY_PURCHASE_DRAFT',
+  ];
+  const code = stableCodes.find((candidate) => message.includes(candidate))
+    ?? 'PURCHASE_DRAFT_UNAVAILABLE';
+  if (code === 'SUPPLIER_NOT_FOUND' || code.endsWith('_NOT_FOUND')) {
+    return { status: 404, code };
+  }
+  if (
+    code === 'VERSION_CONFLICT'
+    || code === 'INVALID_STATUS_TRANSITION'
+    || code === 'DRAFT_NOT_EDITABLE'
+    || code === 'RFQ_REFERENCE_NOT_ALLOWED'
+    || code === 'DRAFT_NOT_READY_FOR_EXPORT'
+  ) {
+    return { status: 409, code };
+  }
+  return { status: 503, code };
+}
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -320,6 +370,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           const company = companyStr === '1' ? '1' : companyStr === '2' ? '2' : 'all';
           const page = Math.max(1, Number(q.page ?? '1') || 1);
           const pageSize = Math.min(200, Math.max(1, Number(q.pageSize ?? '50') || 50));
+          const supplierId = /^\d+$/.test(q.supplierId ?? '')
+            ? Number(q.supplierId)
+            : undefined;
+          const brandId = q.brandId === 'undefined'
+            ? 'undefined' as const
+            : /^\d+$/.test(q.brandId ?? '')
+              ? Number(q.brandId)
+              : undefined;
 
           try {
             const result = await cp.list({
@@ -328,6 +386,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               priority: q.priority ?? 'all',
               decisionStatus: q.decisionStatus ?? 'all',
               noSupplier: q.noSupplier === 'true',
+              ...(supplierId === undefined ? {} : { supplierId }),
+              ...(brandId === undefined ? {} : { brandId }),
               page,
               pageSize,
             });
@@ -472,6 +532,242 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               data: null,
               error: { code: 'EXPORT_GENERATION_FAILED', message: 'Failed to generate export workbook' },
             });
+          }
+        },
+      );
+    }
+
+    if (options.purchaseDrafts) {
+      const drafts = options.purchaseDrafts;
+      const requireDraftAccess = (cookieHeader: string | undefined) =>
+        hasOverviewAccess(cookieHeader);
+      const validationError = (reply: FastifyReply, message: string) => reply.code(400).send({
+          data: null,
+          error: { code: 'VALIDATION_ERROR', message },
+        });
+
+      app.get('/api/procurement/suppliers', async (request, reply) => {
+        if (!requireDraftAccess(request.headers.cookie)) {
+          return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+        }
+        const parsed = SupplierDirectoryQuerySchema.safeParse(request.query);
+        if (!parsed.success) {
+          return validationError(reply, parsed.error.issues[0]?.message ?? 'Invalid supplier query');
+        }
+        try {
+          return reply.send({ data: await drafts.listSuppliers(parsed.data), error: null });
+        } catch (error) {
+          const mapped = purchaseDraftError(error);
+          return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
+        }
+      });
+
+      app.get('/api/procurement/brands', async (request, reply) => {
+        if (!requireDraftAccess(request.headers.cookie)) {
+          return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+        }
+        try {
+          return reply.send({ data: await drafts.listBrands(), error: null });
+        } catch (error) {
+          const mapped = purchaseDraftError(error);
+          return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
+        }
+      });
+
+      app.get<{ Querystring: { status?: string; companyId?: string; supplierId?: string } }>(
+        '/api/procurement/purchase-drafts',
+        async (request, reply) => {
+          if (!requireDraftAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+          const status = request.query.status
+            ? PurchaseDraftStatusSchema.safeParse(request.query.status)
+            : { success: true as const, data: undefined };
+          const companyId = request.query.companyId === undefined
+            ? undefined
+            : Number(request.query.companyId);
+          const supplierId = request.query.supplierId === undefined
+            ? undefined
+            : Number(request.query.supplierId);
+          if (
+            !status.success
+            || (companyId !== undefined && companyId !== 1 && companyId !== 2)
+            || (supplierId !== undefined && (!Number.isSafeInteger(supplierId) || supplierId <= 0))
+          ) {
+            return validationError(reply, 'Invalid purchase draft query');
+          }
+          try {
+            const query = {
+              ...(status.data ? { status: status.data } : {}),
+              ...(companyId ? { companyId: companyId as 1 | 2 } : {}),
+              ...(supplierId ? { supplierId } : {}),
+            };
+            return reply.send({ data: await drafts.listDrafts(query), error: null });
+          } catch (error) {
+            const mapped = purchaseDraftError(error);
+            return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
+          }
+        },
+      );
+
+      app.get<{ Params: { id: string } }>(
+        '/api/procurement/purchase-drafts/:id',
+        async (request, reply) => {
+          if (!requireDraftAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+          if (!UuidSchema.safeParse(request.params.id).success) {
+            return validationError(reply, 'Invalid draft id');
+          }
+          try {
+            return reply.send({ data: await drafts.getDraft(request.params.id), error: null });
+          } catch (error) {
+            const mapped = purchaseDraftError(error);
+            return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
+          }
+        },
+      );
+
+      app.post('/api/procurement/purchase-drafts', async (request, reply) => {
+        if (!requireDraftAccess(request.headers.cookie)) {
+          return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+        }
+        const parsed = PurchaseDraftCreateInputSchema.safeParse(request.body);
+        if (!parsed.success) {
+          return validationError(reply, parsed.error.issues[0]?.message ?? 'Invalid draft');
+        }
+        try {
+          return reply.code(201).send({ data: await drafts.createDraft(parsed.data), error: null });
+        } catch (error) {
+          const mapped = purchaseDraftError(error);
+          return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
+        }
+      });
+
+      app.patch<{ Params: { id: string; lineId: string } }>(
+        '/api/procurement/purchase-drafts/:id/lines/:lineId',
+        async (request, reply) => {
+          if (!requireDraftAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+          const parsed = PurchaseDraftLineInputSchema.safeParse(request.body);
+          if (
+            !UuidSchema.safeParse(request.params.id).success
+            || !UuidSchema.safeParse(request.params.lineId).success
+            || !parsed.success
+          ) {
+            return validationError(reply, 'Invalid draft line update');
+          }
+          try {
+            return reply.send({
+              data: await drafts.updateLine(request.params.id, request.params.lineId, parsed.data),
+              error: null,
+            });
+          } catch (error) {
+            const mapped = purchaseDraftError(error);
+            return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
+          }
+        },
+      );
+
+      app.post<{ Params: { id: string } }>(
+        '/api/procurement/purchase-drafts/:id/change-supplier',
+        async (request, reply) => {
+          if (!requireDraftAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+          const parsed = ChangeDraftSupplierSchema.safeParse(request.body);
+          if (!UuidSchema.safeParse(request.params.id).success || !parsed.success) {
+            return validationError(reply, 'Invalid supplier change');
+          }
+          try {
+            return reply.send({
+              data: await drafts.changeSupplier(request.params.id, parsed.data),
+              error: null,
+            });
+          } catch (error) {
+            const mapped = purchaseDraftError(error);
+            return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
+          }
+        },
+      );
+
+      app.post<{ Params: { id: string } }>(
+        '/api/procurement/purchase-drafts/:id/status',
+        async (request, reply) => {
+          if (!requireDraftAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+          const parsed = PurchaseDraftStatusInputSchema.safeParse(request.body);
+          if (!UuidSchema.safeParse(request.params.id).success || !parsed.success) {
+            return validationError(reply, 'Invalid status transition');
+          }
+          try {
+            return reply.send({ data: await drafts.transition(request.params.id, parsed.data), error: null });
+          } catch (error) {
+            const mapped = purchaseDraftError(error);
+            return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
+          }
+        },
+      );
+
+      app.post<{ Params: { id: string } }>(
+        '/api/procurement/purchase-drafts/:id/rfq-reference',
+        async (request, reply) => {
+          if (!requireDraftAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+          const parsed = PurchaseDraftRfqReferenceInputSchema.safeParse(request.body);
+          if (!UuidSchema.safeParse(request.params.id).success || !parsed.success) {
+            return validationError(reply, 'Invalid Odoo RFQ reference');
+          }
+          try {
+            return reply.send({
+              data: await drafts.setRfqReference(request.params.id, parsed.data),
+              error: null,
+            });
+          } catch (error) {
+            const mapped = purchaseDraftError(error);
+            return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
+          }
+        },
+      );
+
+      app.get<{ Params: { id: string } }>(
+        '/api/procurement/purchase-drafts/:id/export',
+        async (request, reply) => {
+          if (!requireDraftAccess(request.headers.cookie)) {
+            return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+          }
+          if (!UuidSchema.safeParse(request.params.id).success) {
+            return validationError(reply, 'Invalid draft id');
+          }
+          try {
+            const snapshot = await drafts.getDraft(request.params.id);
+            const generatedAt = new Date().toISOString();
+            const workbook = await buildPurchaseDraftRfqWorkbook(
+              snapshot.draft,
+              snapshot.lines,
+              generatedAt,
+            );
+            if (snapshot.draft.status === 'READY_FOR_EXPORT') {
+              await drafts.transition(snapshot.draft.id, {
+                status: 'EXPORTED',
+                expectedVersion: snapshot.draft.version,
+              });
+            }
+            const date = generatedAt.slice(0, 10);
+            const filename = `odoo-rfq-company-${snapshot.draft.companyId}-supplier-${snapshot.draft.supplierId}-${date}.xlsx`;
+            return reply
+              .header(
+                'Content-Type',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              )
+              .header('Content-Disposition', `attachment; filename="${filename}"`)
+              .send(workbook);
+          } catch (error) {
+            const mapped = purchaseDraftError(error);
+            return reply.code(mapped.status).send({ data: null, error: { code: mapped.code } });
           }
         },
       );

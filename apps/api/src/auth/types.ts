@@ -1,6 +1,15 @@
 import type {
   CompanyPurchaseDecisionInput,
   CompanyPurchaseRow,
+  PurchaseDraft,
+  PurchaseDraftCreateInput,
+  PurchaseDraftLine,
+  PurchaseDraftLineInput,
+  PurchaseDraftRfqReferenceInput,
+  PurchaseDraftStatus,
+  PurchaseDraftStatusInput,
+  SupplierDirectoryItem,
+  SupplierDirectoryQuery,
 } from '@horeca/contracts';
 
 export type AppRole = 'reviewer' | 'admin';
@@ -104,6 +113,8 @@ export interface CompanyPurchaseListParams {
   priority?: string;
   decisionStatus?: string;
   noSupplier?: boolean;
+  supplierId?: number;
+  brandId?: number | 'undefined';
   page: number;
   pageSize: number;
 }
@@ -147,9 +158,49 @@ export interface CompanyPurchaseDependencies {
   exportRows?: (query: { companyId?: number; scope: 'draft' | 'approved' }) => Promise<CompanyPurchaseRow[]>;
 }
 
+export interface PurchaseDraftDependencies {
+  listSuppliers: (query: SupplierDirectoryQuery) => Promise<{
+    items: SupplierDirectoryItem[];
+    pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  }>;
+  listBrands: () => Promise<Array<{
+    brandId: number | null;
+    brandName: string | null;
+    productCount: number;
+  }>>;
+  listDrafts: (query: {
+    status?: PurchaseDraftStatus;
+    companyId?: 1 | 2;
+    supplierId?: number;
+  }) => Promise<PurchaseDraft[]>;
+  getDraft: (draftId: string) => Promise<{
+    draft: PurchaseDraft;
+    lines: PurchaseDraftLine[];
+  }>;
+  createDraft: (input: PurchaseDraftCreateInput) => Promise<{
+    draft: PurchaseDraft;
+    lines: PurchaseDraftLine[];
+  }>;
+  updateLine: (
+    draftId: string,
+    lineId: string,
+    input: PurchaseDraftLineInput,
+  ) => Promise<PurchaseDraftLine>;
+  changeSupplier: (
+    draftId: string,
+    input: { supplierId: number; expectedVersion: number },
+  ) => Promise<PurchaseDraft>;
+  transition: (draftId: string, input: PurchaseDraftStatusInput) => Promise<PurchaseDraft>;
+  setRfqReference: (
+    draftId: string,
+    input: PurchaseDraftRfqReferenceInput,
+  ) => Promise<PurchaseDraft>;
+}
+
 export interface BuildAppOptions {
   auth?: AuthDependencies;
   procurement?: ProcurementDependencies;
   review?: ReviewDependencies;
   companyPurchase?: CompanyPurchaseDependencies;
+  purchaseDrafts?: PurchaseDraftDependencies;
 }

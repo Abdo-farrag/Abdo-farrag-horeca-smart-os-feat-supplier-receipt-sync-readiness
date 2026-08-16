@@ -25,6 +25,8 @@ describe('Review API URL prefixes', () => {
       priority: 'all',
       decisionStatus: 'all',
       noSupplier: false,
+      supplierId: 99001,
+      brandId: 'undefined',
       page: 1,
       pageSize: 50,
     });
@@ -32,6 +34,9 @@ describe('Review API URL prefixes', () => {
     expect(fetchSpy).toHaveBeenCalled();
     const calledUrl = fetchSpy.mock.calls[0]?.[0] as string;
     expect(calledUrl.startsWith('/api/procurement/company-review')).toBe(true);
+    const query = new URL(calledUrl, 'https://app.test').searchParams;
+    expect(query.get('supplierId')).toBe('99001');
+    expect(query.get('brandId')).toBe('undefined');
 
     fetchSpy.mockRestore();
   });

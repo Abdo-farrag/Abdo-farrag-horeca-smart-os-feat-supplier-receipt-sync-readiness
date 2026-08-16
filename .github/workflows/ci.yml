@@ -112,14 +112,17 @@ jobs:
           path: supabase/functions/edge-lint.log
           if-no-files-found: ignore
 
-      - name: Test receipt mapper
-        run: deno test _shared/receipt-mapper.test.ts
+      - name: Test Edge Function mappers
+        run: deno test _shared/receipt-mapper.test.ts _shared/purchase-reference-mapper.test.ts
 
       - name: Typecheck supplier receipt sync
         shell: bash
         run: |
           set -o pipefail
           deno check sync-odoo18-supplier-receipts/index.ts 2>&1 | tee edge-check.log
+
+      - name: Typecheck purchase reference sync
+        run: deno check sync-odoo18-purchase-reference/index.ts
 
       - name: Upload Edge Function typecheck log
         if: always()

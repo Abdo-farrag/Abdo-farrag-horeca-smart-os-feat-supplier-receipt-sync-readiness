@@ -51,6 +51,8 @@ export const CompanyPurchaseRowSchema = z.object({
   companyName: z.string().min(1),
   productCode: z.string().min(1),
   productName: z.string().min(1),
+  brandId: z.number().int().positive().nullable().optional(),
+  brandName: z.string().nullable().optional(),
   priority: PrioritySchema,
   freeQty: z.number(),
   effectiveDailyDemand: z.number().nonnegative(),
