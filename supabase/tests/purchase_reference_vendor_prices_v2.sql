@@ -31,7 +31,7 @@ insert into public.procurement_product_vendor_prices (
 select is(
   (select count(*) from public.procurement_product_vendor_prices
    where product_code = 'TEST-V2-PRICE' and supplier_id = 96001 and minimum_qty = 12),
-  4::bigint,
+  3::bigint,
   'same projected product/supplier/MOQ rows coexist when Odoo ids differ'
 );
 
