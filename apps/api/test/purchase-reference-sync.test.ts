@@ -70,16 +70,53 @@ describe('Odoo purchasing reference mapper', () => {
   it('preserves supplier-specific price and MOQ', () => {
     expect(
       mapOdooVendorPrice({
+        id: 7001,
         product_code: '101002',
         supplier: [32546, 'Arma Supplier'],
+        company: [1, 'MAS'],
         minimum_qty: 12,
         price: 1526.9,
         currency: [2, 'SAR'],
         delay_days: 4,
         sequence: 10,
+        valid_from: '2026-08-01',
+        valid_to: '2026-12-31',
         write_date: null,
       }),
-    ).toMatchObject({ supplier_id: 32546, minimum_qty: 12, price: 1526.9 });
+    ).toMatchObject({
+      odoo_supplierinfo_id: 7001,
+      supplier_id: 32546,
+      company_id: 1,
+      minimum_qty: 12,
+      price: 1526.9,
+      valid_from: '2026-08-01',
+      valid_to: '2026-12-31',
+    });
+  });
+
+  it('keeps same-tier Odoo vendor rows distinct and maps global rules', () => {
+    const common = {
+      product_code: '101002',
+      supplier: [32546, 'Arma Supplier'] as [number, string],
+      company: false as const,
+      minimum_qty: 12,
+      price: 1526.9,
+      currency: [2, 'SAR'] as [number, string],
+      delay_days: 4,
+      sequence: 10,
+      valid_from: false as const,
+      valid_to: false as const,
+      write_date: null,
+    };
+
+    const first = mapOdooVendorPrice({ ...common, id: 7001 });
+    const second = mapOdooVendorPrice({ ...common, id: 7002 });
+
+    expect(first.odoo_supplierinfo_id).toBe(7001);
+    expect(second.odoo_supplierinfo_id).toBe(7002);
+    expect(first.company_id).toBeNull();
+    expect(first.valid_from).toBeNull();
+    expect(first.valid_to).toBeNull();
   });
 });
 
@@ -123,5 +160,12 @@ describe('Odoo purchasing reference sync safety', () => {
     expect(source).toContain('offset: sellerOffset');
     expect(source).toContain('["supplier_rank", ">", 0]');
     expect(source).toContain('purchaseReferenceWriteAllowed(mode)');
+    expect(source).toContain('{ onConflict: "odoo_supplierinfo_id" }');
+    expect(source.indexOf('progress.partnerCursorEnd = partnerCursor')).toBeGreaterThan(
+      source.indexOf('progress.writtenRows += directoryRows.length'),
+    );
+    expect(source.indexOf('progress.productCursorEnd = productCursor')).toBeGreaterThan(
+      source.indexOf('progress.writtenRows += vendorRows.length'),
+    );
   });
 });

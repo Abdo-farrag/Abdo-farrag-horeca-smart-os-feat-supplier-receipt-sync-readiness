@@ -20,13 +20,17 @@ export type OdooProductPurchaseReference = {
 };
 
 export type OdooVendorPriceReference = {
+  id: number;
   product_code: string;
   supplier: Many2One;
+  company: Many2One;
   minimum_qty: number | string | null;
   price: number | string | null;
   currency: Many2One;
   delay_days: number | string | null;
   sequence: number | string | null;
+  valid_from: string | false | null;
+  valid_to: string | false | null;
   write_date: string | null;
 };
 
@@ -74,13 +78,17 @@ export type ProductPurchaseMetadataRow = {
 };
 
 export type ProductVendorPriceRow = {
+  odoo_supplierinfo_id: number;
   product_code: string;
   supplier_id: number;
+  company_id: number | null;
   minimum_qty: number;
   price: number;
   currency: string | null;
   delay_days: number | null;
   sequence: number;
+  valid_from: string | null;
+  valid_to: string | null;
   source_updated_at: string | null;
 };
 
@@ -108,6 +116,17 @@ function trimmed(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const result = value.trim();
   return result.length > 0 ? result : null;
+}
+
+function optionalDate(value: unknown, code: string): string | null {
+  if (value === null || value === undefined || value === false || value === "") return null;
+  const normalized = trimmed(value);
+  if (!normalized || !/^\d{4}-\d{2}-\d{2}$/.test(normalized)) throw new Error(code);
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== normalized) {
+    throw new Error(code);
+  }
+  return normalized;
 }
 
 function many2One(value: Many2One): { id: number; name: string } | null {
@@ -150,17 +169,21 @@ export function mapOdooProductPurchaseMetadata(
 }
 
 export function mapOdooVendorPrice(raw: OdooVendorPriceReference): ProductVendorPriceRow {
+  const supplierInfoId = positiveInteger(raw.id, "INVALID_SUPPLIERINFO_ID");
   const productCode = trimmed(raw.product_code);
   if (!productCode) throw new Error("MISSING_VENDOR_PRODUCT_CODE");
   const supplier = many2One(raw.supplier);
   if (!supplier) throw new Error("MISSING_VENDOR_SUPPLIER");
+  const company = many2One(raw.company);
   const price = nonNegativeNumber(raw.price, -1, "INVALID_VENDOR_PRICE");
   if (price < 0) throw new Error("MISSING_VENDOR_PRICE");
   const currency = many2One(raw.currency);
 
   return {
+    odoo_supplierinfo_id: supplierInfoId,
     product_code: productCode,
     supplier_id: supplier.id,
+    company_id: company?.id ?? null,
     minimum_qty: nonNegativeNumber(raw.minimum_qty, 0, "INVALID_MINIMUM_QUANTITY"),
     price,
     currency: currency?.name ?? null,
@@ -168,6 +191,8 @@ export function mapOdooVendorPrice(raw: OdooVendorPriceReference): ProductVendor
       ? null
       : nonNegativeNumber(raw.delay_days, 0, "INVALID_DELAY_DAYS"),
     sequence: nonNegativeNumber(raw.sequence, 10, "INVALID_VENDOR_SEQUENCE"),
+    valid_from: optionalDate(raw.valid_from, "INVALID_VENDOR_VALID_FROM"),
+    valid_to: optionalDate(raw.valid_to, "INVALID_VENDOR_VALID_TO"),
     source_updated_at: trimmed(raw.write_date),
   };
 }

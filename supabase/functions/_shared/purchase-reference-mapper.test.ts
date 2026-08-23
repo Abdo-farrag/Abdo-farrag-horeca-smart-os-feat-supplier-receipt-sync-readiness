@@ -104,21 +104,52 @@ Deno.test("keeps brand null when Odoo exposes no official brand field", () => {
 
 Deno.test("maps supplier-specific vendor price tiers", () => {
   const row = mapOdooVendorPrice({
+    id: 7001,
     product_code: "101002",
     supplier: [32546, "Arma Supplier"],
+    company: [1, "MAS"],
     minimum_qty: 12,
     price: 1526.9,
     currency: [2, "SAR"],
     delay_days: 4,
     sequence: 10,
+    valid_from: "2026-08-01",
+    valid_to: "2026-12-31",
     write_date: "2026-08-16 09:00:00",
   });
 
+  assert(row.odoo_supplierinfo_id === 7001, "Odoo supplier-info id must be preserved");
   assert(row.product_code === "101002", "product code must be preserved");
   assert(row.supplier_id === 32546, "supplier id must be preserved");
+  assert(row.company_id === 1, "company id must be preserved");
   assert(row.minimum_qty === 12, "MOQ tier must be preserved");
   assert(row.price === 1526.9, "vendor price must be preserved");
   assert(row.currency === "SAR", "currency name must be preserved");
+  assert(row.valid_from === "2026-08-01", "start date must be preserved");
+  assert(row.valid_to === "2026-12-31", "end date must be preserved");
+});
+
+Deno.test("keeps duplicate projected tiers distinct by Odoo supplier-info id", () => {
+  const common = {
+    product_code: "101002",
+    supplier: [32546, "Arma Supplier"] as [number, string],
+    company: false as const,
+    minimum_qty: 12,
+    price: 1526.9,
+    currency: [2, "SAR"] as [number, string],
+    delay_days: 4,
+    sequence: 10,
+    valid_from: false as const,
+    valid_to: false as const,
+    write_date: null,
+  };
+  const first = mapOdooVendorPrice({ ...common, id: 7001 });
+  const second = mapOdooVendorPrice({ ...common, id: 7002 });
+
+  assert(first.odoo_supplierinfo_id !== second.odoo_supplierinfo_id, "ids must stay distinct");
+  assert(first.company_id === null, "global company must map to null");
+  assert(first.valid_from === null, "missing start date must map to null");
+  assert(first.valid_to === null, "missing end date must map to null");
 });
 
 Deno.test("defaults to bounded zero-write test mode", () => {

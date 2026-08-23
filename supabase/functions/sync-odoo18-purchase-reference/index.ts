@@ -26,6 +26,12 @@ import {
   type PurchaseReferenceRequestBody,
   purchaseReferenceWriteAllowed,
 } from "../_shared/purchase-reference-input.ts";
+import {
+  createPurchaseReferenceSyncProgress,
+  purchaseReferenceFailurePayload,
+  purchaseReferenceLogMessage,
+  sanitizePurchaseReferenceError,
+} from "../_shared/purchase-reference-telemetry.ts";
 
 type OdooProductRow =
   & Omit<
@@ -37,6 +43,7 @@ type OdooProductRow =
 type OdooSupplierInfo = {
   id: number;
   partner_id: Many2One;
+  company_id: Many2One;
   product_id: Many2One;
   product_tmpl_id: Many2One;
   min_qty: number | string | null;
@@ -44,6 +51,8 @@ type OdooSupplierInfo = {
   currency_id: Many2One;
   delay: number | string | null;
   sequence: number | string | null;
+  date_start: string | false | null;
+  date_end: string | false | null;
   write_date: string | null;
 };
 
@@ -95,6 +104,7 @@ Deno.serve(async (req: Request) => {
   const startedAt = new Date().toISOString();
   let mode: PurchaseReferenceMode = "test";
   let supabase: ReturnType<typeof createClient> | null = null;
+  let progress = createPurchaseReferenceSyncProgress(0, 0);
 
   try {
     if (req.method !== "POST") return jsonResponse({ success: false, error: "Use POST" }, 405);
@@ -104,8 +114,7 @@ Deno.serve(async (req: Request) => {
     mode = input.mode;
     const { pageSize, maxPages } = input;
     let { partnerCursor, productCursor } = input;
-    const partnerCursorStart = partnerCursor;
-    const productCursorStart = productCursor;
+    progress = createPurchaseReferenceSyncProgress(partnerCursor, productCursor);
 
     const credentials = readOdooCredentials();
     const supabaseUrl = requiredEnv("SUPABASE_URL");
@@ -154,18 +163,10 @@ Deno.serve(async (req: Request) => {
       ...(orderMultipleField ? [orderMultipleField] : []),
     ];
 
-    let supplierPages = 0;
-    let productPages = 0;
-    let suppliersFetched = 0;
-    let suppliersAccepted = 0;
-    let productsFetched = 0;
-    let productsAccepted = 0;
-    let vendorPricesAccepted = 0;
-    let writtenRows = 0;
     const supplierSample: SupplierDirectoryRow[] = [];
     const productSample: ProductPurchaseMetadataRow[] = [];
 
-    while (supplierPages < maxPages) {
+    while (progress.supplierPages < maxPages) {
       const partnerDomain: unknown[] = knownSupplierIds.length > 0
         ? [
           "|",
@@ -191,14 +192,14 @@ Deno.serve(async (req: Request) => {
         },
       );
       if (partners.length === 0) break;
-      supplierPages += 1;
-      suppliersFetched += partners.length;
-      partnerCursor = Math.max(...partners.map((partner) => Number(partner.id)));
+      progress.supplierPages += 1;
+      progress.suppliersFetched += partners.length;
+      const nextPartnerCursor = Math.max(...partners.map((partner) => Number(partner.id)));
       const directoryRows = partners.map(mapOdooPartnerDirectoryRecord);
       const eligibleRows = partners.map(mapOdooSupplierReference).filter(
         (row): row is SupplierDirectoryRow => row !== null,
       );
-      suppliersAccepted += eligibleRows.length;
+      progress.suppliersAccepted += eligibleRows.length;
       for (const row of eligibleRows) {
         if (supplierSample.length < 5) supplierSample.push(row);
       }
@@ -210,12 +211,14 @@ Deno.serve(async (req: Request) => {
           { onConflict: "odoo_supplier_id" },
         );
         if (error) throw new Error(`Supplier directory upsert failed: ${error.message}`);
-        writtenRows += directoryRows.length;
+        progress.writtenRows += directoryRows.length;
       }
+      partnerCursor = nextPartnerCursor;
+      progress.partnerCursorEnd = partnerCursor;
       if (partners.length < pageSize || mode === "test") break;
     }
 
-    while (productPages < maxPages) {
+    while (progress.productPages < maxPages) {
       const products = await executeKw<OdooProductRow[]>(
         credentials,
         uid,
@@ -233,9 +236,9 @@ Deno.serve(async (req: Request) => {
         },
       );
       if (products.length === 0) break;
-      productPages += 1;
-      productsFetched += products.length;
-      productCursor = Math.max(...products.map((product) => Number(product.id)));
+      progress.productPages += 1;
+      progress.productsFetched += products.length;
+      const nextProductCursor = Math.max(...products.map((product) => Number(product.id)));
 
       const normalizedProducts = products.map((product) => ({
         id: product.id,
@@ -251,7 +254,7 @@ Deno.serve(async (req: Request) => {
       const productRows = normalizedProducts.map(mapOdooProductPurchaseMetadata).filter(
         (row): row is ProductPurchaseMetadataRow => row !== null,
       );
-      productsAccepted += productRows.length;
+      progress.productsAccepted += productRows.length;
       for (const row of productRows) if (productSample.length < 5) productSample.push(row);
 
       const productCodeById = new Map(
@@ -277,6 +280,7 @@ Deno.serve(async (req: Request) => {
         const requiredSupplierInfoFields = [
           "id",
           "partner_id",
+          "company_id",
           "product_id",
           "product_tmpl_id",
           "min_qty",
@@ -284,54 +288,66 @@ Deno.serve(async (req: Request) => {
           "currency_id",
           "delay",
           "sequence",
+          "date_start",
+          "date_end",
           "write_date",
         ];
-        if (requiredSupplierInfoFields.every((field) => supplierInfoFields.has(field))) {
-          const sellerRows: OdooSupplierInfo[] = [];
-          let sellerOffset = 0;
-          while (true) {
-            const sellerPage = await executeKw<OdooSupplierInfo[]>(
-              credentials,
-              uid,
-              "product.supplierinfo",
-              "search_read",
-              [[
-                ["product_tmpl_id", "in", templateIds],
-              ]],
-              {
-                fields: requiredSupplierInfoFields,
-                limit: MAX_PAGE_SIZE,
-                offset: sellerOffset,
-                order: "sequence asc,id asc",
-                context,
-              },
-            );
-            sellerRows.push(...sellerPage);
-            if (sellerPage.length < MAX_PAGE_SIZE) break;
-            sellerOffset += sellerPage.length;
-          }
-          vendorRows = sellerRows.flatMap((seller) => {
-            const exactProductId = many2OneId(seller.product_id);
-            const templateId = many2OneId(seller.product_tmpl_id);
-            const productCode = exactProductId === null
-              ? (templateId !== null && productCodesByTemplate.get(templateId)?.length === 1
-                ? productCodesByTemplate.get(templateId)?.[0]
-                : undefined)
-              : productCodeById.get(exactProductId);
-            if (!productCode) return [];
-            return [mapOdooVendorPrice({
-              product_code: productCode,
-              supplier: seller.partner_id,
-              minimum_qty: seller.min_qty,
-              price: seller.price,
-              currency: seller.currency_id,
-              delay_days: seller.delay,
-              sequence: seller.sequence,
-              write_date: seller.write_date,
-            })];
-          });
-          vendorPricesAccepted += vendorRows.length;
+        const missingSupplierInfoFields = requiredSupplierInfoFields.filter(
+          (field) => !supplierInfoFields.has(field),
+        );
+        if (missingSupplierInfoFields.length > 0) {
+          throw new Error(
+            `Missing Odoo supplier-info fields: ${missingSupplierInfoFields.join(", ")}`,
+          );
         }
+        const sellerRows: OdooSupplierInfo[] = [];
+        let sellerOffset = 0;
+        while (true) {
+          const sellerPage = await executeKw<OdooSupplierInfo[]>(
+            credentials,
+            uid,
+            "product.supplierinfo",
+            "search_read",
+            [[
+              ["product_tmpl_id", "in", templateIds],
+            ]],
+            {
+              fields: requiredSupplierInfoFields,
+              limit: MAX_PAGE_SIZE,
+              offset: sellerOffset,
+              order: "sequence asc,id asc",
+              context,
+            },
+          );
+          sellerRows.push(...sellerPage);
+          if (sellerPage.length < MAX_PAGE_SIZE) break;
+          sellerOffset += sellerPage.length;
+        }
+        vendorRows = sellerRows.flatMap((seller) => {
+          const exactProductId = many2OneId(seller.product_id);
+          const templateId = many2OneId(seller.product_tmpl_id);
+          const productCode = exactProductId === null
+            ? (templateId !== null && productCodesByTemplate.get(templateId)?.length === 1
+              ? productCodesByTemplate.get(templateId)?.[0]
+              : undefined)
+            : productCodeById.get(exactProductId);
+          if (!productCode) return [];
+          return [mapOdooVendorPrice({
+            id: seller.id,
+            product_code: productCode,
+            supplier: seller.partner_id,
+            company: seller.company_id,
+            minimum_qty: seller.min_qty,
+            price: seller.price,
+            currency: seller.currency_id,
+            delay_days: seller.delay,
+            sequence: seller.sequence,
+            valid_from: seller.date_start,
+            valid_to: seller.date_end,
+            write_date: seller.write_date,
+          })];
+        });
+        progress.vendorPricesAccepted += vendorRows.length;
       }
 
       if (purchaseReferenceWriteAllowed(mode) && productRows.length > 0) {
@@ -345,19 +361,22 @@ Deno.serve(async (req: Request) => {
         if (productError) {
           throw new Error(`Product metadata upsert failed: ${productError.message}`);
         }
-        writtenRows += productRows.length;
+        progress.writtenRows += productRows.length;
 
         if (vendorRows.length > 0) {
           const { error: vendorError } = await supabase
             .from("procurement_product_vendor_prices")
             .upsert(
               vendorRows.map((row) => ({ ...row, synced_at: syncedAt, updated_at: syncedAt })),
-              { onConflict: "product_code,supplier_id,minimum_qty" },
+              { onConflict: "odoo_supplierinfo_id" },
             );
           if (vendorError) throw new Error(`Vendor price upsert failed: ${vendorError.message}`);
-          writtenRows += vendorRows.length;
+          progress.writtenRows += vendorRows.length;
         }
       }
+
+      productCursor = nextProductCursor;
+      progress.productCursorEnd = productCursor;
 
       if (products.length < pageSize || mode === "test") break;
     }
@@ -366,13 +385,13 @@ Deno.serve(async (req: Request) => {
       await writeSyncLog(supabase, {
         sync_type: SYNC_TYPE,
         status: "success",
-        rows_count: writtenRows,
+        rows_count: progress.writtenRows,
         message: JSON.stringify({
-          suppliers_fetched: suppliersFetched,
-          suppliers_accepted: suppliersAccepted,
-          products_fetched: productsFetched,
-          products_accepted: productsAccepted,
-          vendor_prices_accepted: vendorPricesAccepted,
+          suppliers_fetched: progress.suppliersFetched,
+          suppliers_accepted: progress.suppliersAccepted,
+          products_fetched: progress.productsFetched,
+          products_accepted: progress.productsAccepted,
+          vendor_prices_accepted: progress.vendorPricesAccepted,
         }),
         started_at: startedAt,
         finished_at: new Date().toISOString(),
@@ -383,39 +402,40 @@ Deno.serve(async (req: Request) => {
       success: true,
       mode,
       database: credentials.database,
-      supplier_pages: supplierPages,
-      product_pages: productPages,
-      suppliers_fetched: suppliersFetched,
-      suppliers_accepted: suppliersAccepted,
-      products_fetched: productsFetched,
-      products_accepted: productsAccepted,
-      vendor_prices_accepted: vendorPricesAccepted,
-      inserted_or_updated_rows: purchaseReferenceWriteAllowed(mode) ? writtenRows : 0,
-      write_performed: purchaseReferenceWriteAllowed(mode),
-      partner_cursor_start: partnerCursorStart,
-      partner_cursor_end: partnerCursor,
-      product_cursor_start: productCursorStart,
-      product_cursor_end: productCursor,
+      supplier_pages: progress.supplierPages,
+      product_pages: progress.productPages,
+      suppliers_fetched: progress.suppliersFetched,
+      suppliers_accepted: progress.suppliersAccepted,
+      products_fetched: progress.productsFetched,
+      products_accepted: progress.productsAccepted,
+      vendor_prices_accepted: progress.vendorPricesAccepted,
+      inserted_or_updated_rows: purchaseReferenceWriteAllowed(mode) ? progress.writtenRows : 0,
+      write_performed: purchaseReferenceWriteAllowed(mode) && progress.writtenRows > 0,
+      partner_cursor_start: progress.partnerCursorStart,
+      partner_cursor_end: progress.partnerCursorEnd,
+      product_cursor_start: progress.productCursorStart,
+      product_cursor_end: progress.productCursorEnd,
       supplier_sample: supplierSample,
       product_sample: productSample,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const internalMessage = error instanceof Error ? error.message : String(error);
+    const publicError = sanitizePurchaseReferenceError(internalMessage);
     if (purchaseReferenceWriteAllowed(mode) && supabase) {
       await writeSyncLog(supabase, {
         sync_type: SYNC_TYPE,
         status: "error",
-        rows_count: 0,
-        message,
+        rows_count: progress.writtenRows,
+        message: purchaseReferenceLogMessage(progress, publicError),
         started_at: startedAt,
         finished_at: new Date().toISOString(),
       });
     }
-    const status = message === "SERVICE_ROLE_REQUIRED"
+    const status = internalMessage === "SERVICE_ROLE_REQUIRED"
       ? 403
-      : message.startsWith("Invalid ")
+      : internalMessage.startsWith("Invalid ")
       ? 400
       : 500;
-    return jsonResponse({ success: false, error: message }, status);
+    return jsonResponse(purchaseReferenceFailurePayload(mode, progress, publicError), status);
   }
 });
