@@ -1,6 +1,6 @@
 run = "npm run dev"
 entrypoint = "apps/web/src/main.tsx"
-modules = ["nodejs-20", "web"]
+modules = [ "web", "nodejs-22"]
 
 [[ports]]
 localPort = 5000
