@@ -1,6 +1,6 @@
 begin;
 
-select plan(37);
+select plan(41);
 
 select has_table('public', 'procurement_purchase_drafts', 'purchase drafts table exists');
 select col_is_pk('public', 'procurement_purchase_drafts', 'id', 'purchase drafts use UUID primary key');
@@ -86,6 +86,15 @@ insert into public.procurement_product_vendor_prices (
   ('TEST-RFQ-1', 99001, 12, 95, 'SAR', 3, 10, now()),
   ('TEST-RFQ-1', 99001, 24, 90, 'SAR', 3, 10, now());
 
+insert into public.procurement_product_vendor_prices (
+  odoo_supplierinfo_id, product_code, supplier_id, company_id, minimum_qty,
+  price, currency, delay_days, sequence, valid_from, valid_to, synced_at
+) values
+  (91001, 'TEST-RFQ-1', 99001, 1, 18, 77, 'SAR', 2, 5,
+    current_date - 1, current_date + 30, now()),
+  (91002, 'TEST-RFQ-1', 99002, 1, 30, 66, 'SAR', 2, 5,
+    current_date - 1, current_date + 30, now());
+
 create or replace view public.v_procurement_recommendation_configurable
 with (security_invoker = true)
 as
@@ -166,8 +175,8 @@ select is(
 select is(
   (select unit_price from public.procurement_purchase_draft_lines
     where product_code = 'TEST-RFQ-1'),
-  90::numeric,
-  'matching supplier price tier is snapshotted'
+  77::numeric,
+  'company-specific valid supplier price is snapshotted'
 );
 select is(
   (select price_source from public.procurement_purchase_draft_lines
@@ -202,8 +211,36 @@ select is(
 
 select lives_ok(
   format(
+    $$select public.rpc_change_purchase_draft_supplier(
+      %L::uuid, 99002, 1,
+      '44444444-4444-4444-4444-444444444444', 'rfq-supplier-change'
+    )$$,
+    (select id from public.procurement_purchase_drafts limit 1)
+  ),
+  'supplier change succeeds with a company-specific valid vendor rule'
+);
+select is(
+  (select supplier_id from public.procurement_purchase_drafts limit 1),
+  99002::bigint,
+  'supplier change persists the selected supplier'
+);
+select is(
+  (select approved_qty from public.procurement_purchase_draft_lines
+    where product_code = 'TEST-RFQ-1'),
+  30::numeric,
+  'supplier change rerounds quantity using company-aware MOQ'
+);
+select is(
+  (select unit_price from public.procurement_purchase_draft_lines
+    where product_code = 'TEST-RFQ-1'),
+  66::numeric,
+  'supplier change selects the valid company-specific vendor price'
+);
+
+select lives_ok(
+  format(
     $$select public.rpc_update_purchase_draft_line(
-      %L::uuid, %L::uuid, 25, 88, 'Buyer adjusted quantity', 1,
+      %L::uuid, %L::uuid, 25, 88, 'Buyer adjusted quantity', 2,
       '44444444-4444-4444-4444-444444444444', 'rfq-line-update'
     )$$,
     (select id from public.procurement_purchase_drafts limit 1),
@@ -240,7 +277,7 @@ select throws_ok(
 select throws_ok(
   format(
     $$select public.rpc_transition_purchase_draft(
-      %L::uuid, 'EXPORTED', 1,
+      %L::uuid, 'EXPORTED', 2,
       '44444444-4444-4444-4444-444444444444', 'rfq-invalid-transition'
     )$$,
     (select id from public.procurement_purchase_drafts limit 1)
@@ -251,7 +288,7 @@ select throws_ok(
 select lives_ok(
   format(
     $$select public.rpc_transition_purchase_draft(
-      %L::uuid, 'READY_FOR_EXPORT', 1,
+      %L::uuid, 'READY_FOR_EXPORT', 2,
       '44444444-4444-4444-4444-444444444444', 'rfq-ready'
     )$$,
     (select id from public.procurement_purchase_drafts limit 1)
@@ -267,8 +304,8 @@ select is(
 select is(
   (select count(*) from public.procurement_audit_events
     where module = 'PURCHASE_DRAFT'),
-  3::bigint,
-  'create, line update and status transition are audited'
+  4::bigint,
+  'create, supplier change, line update and status transition are audited'
 );
 select is(
   (select entity_key from public.procurement_audit_events

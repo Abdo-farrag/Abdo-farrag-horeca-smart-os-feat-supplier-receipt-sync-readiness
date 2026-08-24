@@ -15,9 +15,8 @@ select has_table(
   'supplier-specific vendor price table exists'
 );
 select col_is_pk(
-  'public', 'procurement_product_vendor_prices',
-  array['product_code', 'supplier_id', 'minimum_qty'],
-  'vendor price tiers are keyed by product, supplier and minimum quantity'
+  'public', 'procurement_product_vendor_prices', 'id',
+  'vendor price tiers use a local surrogate primary key'
 );
 select has_table(
   'public', 'procurement_product_purchase_metadata',
