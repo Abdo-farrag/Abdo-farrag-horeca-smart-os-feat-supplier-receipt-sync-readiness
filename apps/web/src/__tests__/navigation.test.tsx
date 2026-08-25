@@ -67,8 +67,10 @@ describe('Procurement Application Navigation', () => {
 
     // Check header displays two navigation options: "نظرة عامة" and "مراجعة واعتماد المشتريات"
     const overviewNav = screen.getByRole('button', { name: 'نظرة عامة' });
+    const referenceDataNav = screen.getByRole('button', { name: 'بيانات الموردين والبراندات' });
     const reviewNavButtons = screen.getAllByRole('button', { name: 'مراجعة واعتماد المشتريات' });
     expect(overviewNav).toBeInTheDocument();
+    expect(referenceDataNav).toBeInTheDocument();
     expect(reviewNavButtons.length).toBeGreaterThanOrEqual(1);
 
     // Click "مراجعة واعتماد المشتريات"

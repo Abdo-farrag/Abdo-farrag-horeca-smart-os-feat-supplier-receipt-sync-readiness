@@ -1,0 +1,2 @@
+-- Indexes are included idempotently in the baseline migration so a clean database
+-- and the already-deployed project converge on the same schema.

@@ -4,6 +4,7 @@ import { createSupabaseCompanyPurchaseDependencies } from './company-purchase.js
 import { createSupabaseProcurementDependencies } from './supabase-procurement.js';
 import { createSupabasePurchaseDraftDependencies } from './purchase-drafts.js';
 import { createSupabaseReviewDependencies } from './supabase-review.js';
+import { createSupabaseReferenceDataDependencies } from './supabase-reference-data.js';
 import { loadConfig, redactSecrets } from './config.js';
 
 function start(): void {
@@ -14,6 +15,7 @@ function start(): void {
     review: createSupabaseReviewDependencies(config),
     companyPurchase: createSupabaseCompanyPurchaseDependencies(config),
     purchaseDrafts: createSupabasePurchaseDraftDependencies(config),
+    referenceData: createSupabaseReferenceDataDependencies(config),
   });
 
   app.listen({ port: config.PORT, host: config.HOST }).catch((error: unknown) => {

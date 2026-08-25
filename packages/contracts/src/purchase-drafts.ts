@@ -10,6 +10,7 @@ export const PurchaseDraftStatusSchema = z.enum([
 ]);
 
 export const PurchasePriceSourceSchema = z.enum([
+  'REFERENCE_OVERRIDE',
   'ODOO_VENDOR_PRICE',
   'SAME_SUPPLIER_RECEIPT',
   'OTHER_SUPPLIER_REFERENCE',

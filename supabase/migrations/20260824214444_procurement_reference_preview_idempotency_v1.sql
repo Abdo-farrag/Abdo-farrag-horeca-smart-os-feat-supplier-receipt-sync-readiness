@@ -1,0 +1,2 @@
+-- Preview checksum idempotency and immutable normalized rows are included in the
+-- baseline and hardened by 20260825230000_procurement_reference_bulk_import_security.sql.

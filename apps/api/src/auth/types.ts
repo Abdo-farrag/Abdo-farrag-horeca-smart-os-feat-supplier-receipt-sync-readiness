@@ -197,10 +197,36 @@ export interface PurchaseDraftDependencies {
   ) => Promise<PurchaseDraft>;
 }
 
+export interface ReferenceDataDependencies {
+  exportWorkbook: () => Promise<Buffer>;
+  previewImport: (input: {
+    filename: string;
+    contentBase64: string;
+  }) => Promise<{
+    batchId: string;
+    filename: string;
+    templateVersion: string;
+    totalRows: number;
+    validRows: number;
+    invalidRows: number;
+    errors: Array<Record<string, unknown>>;
+    changes: Array<Record<string, unknown>>;
+  }>;
+  applyImport: (batchId: string) => Promise<{
+    batchId: string;
+    status: 'APPLIED';
+    inserted: number;
+    updated: number;
+    unchanged: number;
+    skipped: number;
+  }>;
+}
+
 export interface BuildAppOptions {
   auth?: AuthDependencies;
   procurement?: ProcurementDependencies;
   review?: ReviewDependencies;
   companyPurchase?: CompanyPurchaseDependencies;
   purchaseDrafts?: PurchaseDraftDependencies;
+  referenceData?: ReferenceDataDependencies;
 }

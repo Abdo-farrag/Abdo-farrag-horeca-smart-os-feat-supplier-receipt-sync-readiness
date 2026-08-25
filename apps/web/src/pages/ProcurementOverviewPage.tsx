@@ -62,6 +62,12 @@ export function ProcurementOverviewPage() {
             مراجعة واعتماد المشتريات
           </button>
           <button
+            className="btn--nav"
+            onClick={() => navigate('/procurement/reference-data')}
+          >
+            بيانات الموردين والبراندات
+          </button>
+          <button
             className="btn btn--ghost"
             onClick={() => logoutMutation.mutate()}
             disabled={logoutMutation.isPending}

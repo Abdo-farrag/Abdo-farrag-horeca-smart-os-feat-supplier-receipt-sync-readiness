@@ -78,6 +78,13 @@ const ChangeDraftSupplierSchema = z.object({
   supplierId: z.number().int().positive(),
   expectedVersion: z.number().int().min(1),
 });
+const ReferencePreviewSchema = z.object({
+  filename: z.string().trim().min(1).max(255).regex(/\.xlsx$/i),
+  contentBase64: z.string().min(4).max(8_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+});
+const ReferenceApplySchema = z.object({
+  batchId: z.string().uuid(),
+}).strict();
 
 function purchaseDraftError(error: unknown): { status: number; code: string } {
   const message = error instanceof Error ? error.message : 'PURCHASE_DRAFT_UNAVAILABLE';
@@ -771,6 +778,94 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           }
         },
       );
+    }
+
+    if (options.referenceData) {
+      const referenceData = options.referenceData;
+      const requireReferenceAccess = (cookieHeader: string | undefined) =>
+        hasOverviewAccess(cookieHeader);
+      const referenceValidationError = (reply: FastifyReply, message: string) =>
+        reply.code(400).send({
+          data: null,
+          error: { code: 'VALIDATION_ERROR', message },
+        });
+
+      app.get('/api/procurement/reference-data/export', async (request, reply) => {
+        if (!requireReferenceAccess(request.headers.cookie)) {
+          return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+        }
+        try {
+          const workbook = await referenceData.exportWorkbook();
+          const date = new Date().toISOString().slice(0, 10);
+          return reply
+            .header(
+              'Content-Type',
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            )
+            .header(
+              'Content-Disposition',
+              `attachment; filename="procurement-reference-data-${date}.xlsx"`,
+            )
+            .send(workbook);
+        } catch {
+          return reply.code(503).send({
+            data: null,
+            error: { code: 'REFERENCE_DATA_UNAVAILABLE' },
+          });
+        }
+      });
+
+      app.post('/api/procurement/reference-data/preview', async (request, reply) => {
+        if (!requireReferenceAccess(request.headers.cookie)) {
+          return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+        }
+        const parsed = ReferencePreviewSchema.safeParse(request.body);
+        if (!parsed.success) {
+          return referenceValidationError(
+            reply,
+            parsed.error.issues[0]?.message ?? 'Invalid workbook upload',
+          );
+        }
+        try {
+          return reply.send({
+            data: await referenceData.previewImport(parsed.data),
+            error: null,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'REFERENCE_PREVIEW_FAILED';
+          return reply.code(400).send({
+            data: null,
+            error: { code: 'REFERENCE_PREVIEW_FAILED', message },
+          });
+        }
+      });
+
+      app.post('/api/procurement/reference-data/apply', async (request, reply) => {
+        if (!requireReferenceAccess(request.headers.cookie)) {
+          return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED' } });
+        }
+        const parsed = ReferenceApplySchema.safeParse(request.body);
+        if (!parsed.success) {
+          return referenceValidationError(
+            reply,
+            parsed.error.issues[0]?.message ?? 'Invalid import batch',
+          );
+        }
+        try {
+          return reply.send({
+            data: await referenceData.applyImport(parsed.data.batchId),
+            error: null,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'REFERENCE_APPLY_FAILED';
+          const conflict = message.includes('ALREADY_APPLIED')
+            || message.includes('BLOCKING_ERRORS');
+          return reply.code(conflict ? 409 : 400).send({
+            data: null,
+            error: { code: conflict ? 'REFERENCE_IMPORT_CONFLICT' : 'REFERENCE_APPLY_FAILED', message },
+          });
+        }
+      });
     }
   }
 

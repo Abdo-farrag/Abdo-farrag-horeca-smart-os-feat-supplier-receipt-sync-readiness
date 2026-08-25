@@ -10,6 +10,10 @@ import {
 } from '../src/index.js';
 
 describe('purchase draft contracts', () => {
+  it('accepts the Supabase-owned reference override price source', async () => {
+    const { PurchasePriceSourceSchema } = await import('../src/purchase-drafts.js');
+    expect(PurchasePriceSourceSchema.parse('REFERENCE_OVERRIDE')).toBe('REFERENCE_OVERRIDE');
+  });
   it('normalizes supplier search pagination', () => {
     expect(SupplierDirectoryQuerySchema.parse({ search: '  ARMA  ' })).toEqual({
       search: 'ARMA',

@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom
 import { LoginPage } from './pages/LoginPage.js';
 import { ProcurementOverviewPage } from './pages/ProcurementOverviewPage.js';
 import { ProcurementReviewPage } from './pages/ProcurementReviewPage.js';
+import { ProcurementReferenceDataPage } from './pages/ProcurementReferenceDataPage.js';
 import { useSession } from './hooks/useSession.js';
 
 function ProtectedRoute() {
@@ -33,6 +34,7 @@ export function AppRoutes() {
         <Route path="/" element={<ProcurementOverviewPage />} />
         <Route path="/procurement" element={<ProcurementOverviewPage />} />
         <Route path="/procurement/review" element={<ProcurementReviewPage />} />
+        <Route path="/procurement/reference-data" element={<ProcurementReferenceDataPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
