@@ -9,6 +9,7 @@ import {
   mapOdooProductPurchaseMetadata,
   mapOdooSupplierReference,
   mapOdooVendorPrice,
+  uniqueProductMetadataByCode,
   uniqueVendorPricesByOdooId,
 } from '../../../supabase/functions/_shared/purchase-reference-mapper.ts';
 
@@ -138,6 +139,25 @@ describe('Odoo purchasing reference mapper', () => {
     const distinct = { ...first, odoo_supplierinfo_id: 7002 };
 
     expect(uniqueVendorPricesByOdooId([first, first, distinct])).toEqual([first, distinct]);
+  });
+
+  it('deduplicates repeated Odoo product codes before metadata upsert', () => {
+    const first = mapOdooProductPurchaseMetadata({
+      id: 8567,
+      default_code: '101002',
+      product_tmpl_id: [7567, 'Oil Template'],
+      official_brand: [81, 'El Nada'],
+      purchase_uom: [12, 'Pack'],
+      order_multiple: 6,
+      write_date: '2026-08-16 09:00:00',
+    });
+    const duplicate = { ...first!, odoo_product_id: 8568 };
+    const distinct = { ...first!, product_code: '101003', odoo_product_id: 8569 };
+
+    expect(uniqueProductMetadataByCode([first!, duplicate, distinct])).toEqual([
+      duplicate,
+      distinct,
+    ]);
   });
 });
 

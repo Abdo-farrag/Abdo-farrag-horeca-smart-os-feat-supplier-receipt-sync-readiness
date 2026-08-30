@@ -14,6 +14,7 @@ import {
   mapOdooProductPurchaseMetadata,
   mapOdooSupplierReference,
   mapOdooVendorPrice,
+  uniqueProductMetadataByCode,
   uniqueVendorPricesByOdooId,
   type OdooProductPurchaseReference,
   type OdooSupplierReference,
@@ -255,6 +256,7 @@ Deno.serve(async (req: Request) => {
       const productRows = normalizedProducts.map(mapOdooProductPurchaseMetadata).filter(
         (row): row is ProductPurchaseMetadataRow => row !== null,
       );
+      const uniqueProductRows = uniqueProductMetadataByCode(productRows);
       progress.productsAccepted += productRows.length;
       for (const row of productRows) if (productSample.length < 5) productSample.push(row);
 
@@ -351,18 +353,18 @@ Deno.serve(async (req: Request) => {
         progress.vendorPricesAccepted += vendorRows.length;
       }
 
-      if (purchaseReferenceWriteAllowed(mode) && productRows.length > 0) {
+      if (purchaseReferenceWriteAllowed(mode) && uniqueProductRows.length > 0) {
         const syncedAt = new Date().toISOString();
         const { error: productError } = await supabase
           .from("procurement_product_purchase_metadata")
           .upsert(
-            productRows.map((row) => ({ ...row, synced_at: syncedAt, updated_at: syncedAt })),
+            uniqueProductRows.map((row) => ({ ...row, synced_at: syncedAt, updated_at: syncedAt })),
             { onConflict: "product_code" },
           );
         if (productError) {
           throw new Error(`Product metadata upsert failed: ${productError.message}`);
         }
-        progress.writtenRows += productRows.length;
+        progress.writtenRows += uniqueProductRows.length;
 
         if (vendorRows.length > 0) {
           const { error: vendorError } = await supabase

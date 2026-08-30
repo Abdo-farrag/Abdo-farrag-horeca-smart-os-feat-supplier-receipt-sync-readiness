@@ -206,3 +206,13 @@ export function uniqueVendorPricesByOdooId(
   }
   return [...uniqueRows.values()];
 }
+
+export function uniqueProductMetadataByCode(
+  rows: ProductPurchaseMetadataRow[],
+): ProductPurchaseMetadataRow[] {
+  const uniqueRows = new Map<string, ProductPurchaseMetadataRow>();
+  for (const row of rows) {
+    uniqueRows.set(row.product_code, row);
+  }
+  return [...uniqueRows.values()];
+}
