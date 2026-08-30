@@ -88,6 +88,33 @@ describe('procurement reference workbook', () => {
     });
   });
 
+  it('leaves vendor flags blank for products without a supplier so new assignments default active', async () => {
+    const buffer = await buildReferenceWorkbook([
+      exportRow,
+      {
+        ...exportRow,
+        productCode: '101072',
+        supplierId: null,
+        supplierCode: null,
+        supplierName: null,
+        isPrimary: false,
+        active: false,
+      },
+    ], '2026-08-25T10:00:00.000Z');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer as never);
+    const sheet = workbook.getWorksheet('Product References')!;
+
+    expect(sheet.getRow(2).getCell(20).value).toBe(true);
+    expect(sheet.getRow(2).getCell(21).value).toBe(true);
+    expect(sheet.getRow(3).getCell(20).value).toBeNull();
+    expect(sheet.getRow(3).getCell(21).value).toBeNull();
+
+    const parsed = await parseReferenceWorkbook(buffer);
+    expect(parsed.rows[1]).not.toHaveProperty('isPrimary');
+    expect(parsed.rows[1]).not.toHaveProperty('active');
+  });
+
   it('rejects unknown suppliers, negative values, duplicate mappings, and multiple primaries', () => {
     const rows = [
       {

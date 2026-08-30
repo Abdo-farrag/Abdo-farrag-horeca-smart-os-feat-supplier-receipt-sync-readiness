@@ -110,8 +110,8 @@ function exportValues(row: ReferenceExportRow): unknown[] {
     row.currencyCode ?? 'EGP',
     row.delayDays,
     row.sequence ?? 10,
-    row.isPrimary,
-    row.active,
+    row.supplierId === null ? null : row.isPrimary,
+    row.supplierId === null ? null : row.active,
     row.effectiveSource,
     row.brandEffectiveSource,
   ];
@@ -145,7 +145,7 @@ export async function buildReferenceWorkbook(
     ['Horeca Smart Procurement Reference Template', REFERENCE_TEMPLATE_VERSION],
     ['Rule', 'Do not change template_version, company_id, product_code, or supplier_id unless assigning a different valid supplier.'],
     ['Preview', 'Uploading this file only validates it. Data changes happen only after explicit Apply.'],
-    ['Supplier', 'Use supplier_id when possible. supplier_code may be used only when it uniquely identifies one active supplier.'],
+    ['Supplier', 'Use supplier_id when possible. supplier_code may be used only when it uniquely identifies one active supplier. New supplier assignments default to active when active is blank.'],
     ['Brand', 'Use one consistent brand_name for the same product_code across all company/supplier rows.'],
   ]);
   instructions.getColumn(1).width = 24;
