@@ -9,6 +9,7 @@ import {
   mapOdooProductPurchaseMetadata,
   mapOdooSupplierReference,
   mapOdooVendorPrice,
+  uniqueVendorPricesByOdooId,
 } from '../../../supabase/functions/_shared/purchase-reference-mapper.ts';
 
 describe('Odoo purchasing reference mapper', () => {
@@ -117,6 +118,26 @@ describe('Odoo purchasing reference mapper', () => {
     expect(first.company_id).toBeNull();
     expect(first.valid_from).toBeNull();
     expect(first.valid_to).toBeNull();
+  });
+
+  it('deduplicates repeated Odoo supplier-info rows before database upsert', () => {
+    const first = mapOdooVendorPrice({
+      id: 7001,
+      product_code: '101002',
+      supplier: [32546, 'Arma Supplier'],
+      company: [1, 'MAS'],
+      minimum_qty: 12,
+      price: 1526.9,
+      currency: [2, 'SAR'],
+      delay_days: 4,
+      sequence: 10,
+      valid_from: null,
+      valid_to: null,
+      write_date: '2026-08-16 09:00:00',
+    });
+    const distinct = { ...first, odoo_supplierinfo_id: 7002 };
+
+    expect(uniqueVendorPricesByOdooId([first, first, distinct])).toEqual([first, distinct]);
   });
 });
 

@@ -196,3 +196,13 @@ export function mapOdooVendorPrice(raw: OdooVendorPriceReference): ProductVendor
     source_updated_at: trimmed(raw.write_date),
   };
 }
+
+export function uniqueVendorPricesByOdooId(
+  rows: ProductVendorPriceRow[],
+): ProductVendorPriceRow[] {
+  const uniqueRows = new Map<number, ProductVendorPriceRow>();
+  for (const row of rows) {
+    uniqueRows.set(row.odoo_supplierinfo_id, row);
+  }
+  return [...uniqueRows.values()];
+}

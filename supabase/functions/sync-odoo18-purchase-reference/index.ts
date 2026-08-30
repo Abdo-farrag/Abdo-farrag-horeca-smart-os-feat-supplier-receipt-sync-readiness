@@ -14,6 +14,7 @@ import {
   mapOdooProductPurchaseMetadata,
   mapOdooSupplierReference,
   mapOdooVendorPrice,
+  uniqueVendorPricesByOdooId,
   type OdooProductPurchaseReference,
   type OdooSupplierReference,
   type ProductPurchaseMetadataRow,
@@ -323,7 +324,7 @@ Deno.serve(async (req: Request) => {
           if (sellerPage.length < MAX_PAGE_SIZE) break;
           sellerOffset += sellerPage.length;
         }
-        vendorRows = sellerRows.flatMap((seller) => {
+        vendorRows = uniqueVendorPricesByOdooId(sellerRows.flatMap((seller) => {
           const exactProductId = many2OneId(seller.product_id);
           const templateId = many2OneId(seller.product_tmpl_id);
           const productCode = exactProductId === null
@@ -346,7 +347,7 @@ Deno.serve(async (req: Request) => {
             valid_to: seller.date_end,
             write_date: seller.write_date,
           })];
-        });
+        }));
         progress.vendorPricesAccepted += vendorRows.length;
       }
 
